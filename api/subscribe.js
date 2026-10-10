@@ -28,8 +28,9 @@ module.exports = async (req, res) => {
   if (!EMAIL.test(email) || body.consent !== true) return res.status(400).json({ ok: false, error: 'invalid' });
 
   const host = req.headers['x-forwarded-host'] || req.headers.host;
-  const link = `https://${host}/api/confirm?token=${makeToken(email)}`;
-  const text = `Hallo,\n\nbitte bestätige deine Anmeldung zum Daily-Hob-Newsletter (Hob Friday Signal und Hob Monday Rewind), indem du auf diesen Link klickst:\n\n${link}\n\nDer Link ist 48 Stunden gültig. Wenn du dich nicht angemeldet hast, ignoriere diese E-Mail einfach. Dann passiert nichts und wir speichern nichts.\n\nDaily Hob\n${SITE}/impressum · ${SITE}/datenschutz\n`;
+  const src = body.source === 'dossier' ? 'dossier' : '';
+  const link = `https://${host}/api/confirm?token=${makeToken(email, undefined, src)}`;
+  const text = `Hallo,\n\n${src ? 'bitte bestätige deine Anmeldung, um das Daily-Hob-Dossier "Die Entscheider-Welle" zu bekommen. Mit der Bestätigung nimmst du zugleich am Daily-Hob-Newsletter (Hob Friday Signal und Hob Monday Rewind) teil. Klick dafür auf diesen Link:' : 'bitte bestätige deine Anmeldung zum Daily-Hob-Newsletter (Hob Friday Signal und Hob Monday Rewind), indem du auf diesen Link klickst:'}\n\n${link}\n\nDer Link ist 48 Stunden gültig. Wenn du dich nicht angemeldet hast, ignoriere diese E-Mail einfach. Dann passiert nichts und wir speichern nichts.\n\nDaily Hob\n${SITE}/impressum · ${SITE}/datenschutz\n`;
   const r = await resend('/emails', { from: FROM, to: [email], subject: 'Bitte bestätige deine Anmeldung zum Daily Hob', text });
   if (!r.ok) return res.status(502).json({ ok: false, error: 'send' });
   return res.status(200).json({ ok: true });
