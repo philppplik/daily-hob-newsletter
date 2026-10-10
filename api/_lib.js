@@ -3,11 +3,11 @@ const SITE = 'https://hob.philipp-paulik.de';
 const FROM = 'Daily Hob <briefing@hob.philipp-paulik.de>';
 const b64 = (s) => Buffer.from(s).toString('base64url');
 const sign = (payload) => crypto.createHmac('sha256', process.env.SECRET).update(payload).digest('base64url');
-function makeToken(email, ttlMs = 48 * 3600 * 1000) {
-  const p = b64(JSON.stringify({ e: email, x: Date.now() + ttlMs }));
+function makeToken(email, ttlMs = 48 * 3600 * 1000, src = '') {
+  const p = b64(JSON.stringify({ e: email, x: Date.now() + ttlMs, s: src }));
   return p + '.' + sign(p);
 }
-function readToken(token) {
+function readToken(token, full = false) {
   const [p, s] = String(token || '').split('.');
   if (!p || !s) return null;
   const good = sign(p);
@@ -16,7 +16,7 @@ function readToken(token) {
   try {
     const d = JSON.parse(Buffer.from(p, 'base64url').toString());
     if (!d.e || Date.now() > d.x) return null;
-    return d.e;
+    return full ? { email: d.e, src: d.s || '' } : d.e;
   } catch { return null; }
 }
 async function resend(path, body, method = 'POST') {
