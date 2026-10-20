@@ -1,1 +1,11 @@
-{ "regions": ["fra1"] }
+{
+ "regions": [
+  "fra1"
+ ],
+ "rewrites": [
+  {
+   "source": "/lw/api/:n",
+   "destination": "/api/lw-:n"
+  }
+ ]
+}
