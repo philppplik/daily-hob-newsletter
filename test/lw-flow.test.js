@@ -26,3 +26,17 @@ test('rejects missing consent, bad email, forged token', async () => {
   r = rs(); await sub(mk('POST', '/', { email: 'nope', consent: true }), r); assert.equal(r.statusCode, 400);
   assert.equal(L.verify('dl', 'abc.def'), null); assert.equal(L.verify('doi', L.token('dl', 'x', 0)), null);
 });
+test('toolkit flow: DOI -> confirm -> ZIP only after confirm', async () => {
+  const tksub = require('../api/lw-tksub'), tkdl = require('../api/lw-tkdl');
+  let r = rs(); await tksub(mk('POST', '/api/tksub', { email: 'T@Test.de', consent: true }), r); assert.equal(r.statusCode, 200);
+  const mail = require('../api/_lw').sendMail.last; assert.ok(mail.text.includes('s=tk'));
+  assert.ok(!/\.zip/.test(mail.html + mail.text)); assert.ok(!/<img/i.test(mail.html));
+  const id = L.idOf('t@test.de'); assert.equal((await L.store.get(id)).textVersion, L.TK_TEXT_VERSION);
+  global.__toolkit = { [L.TK_VERSION]: Buffer.from('PK-test') };
+  r = rs(); await tkdl(mk('GET', '/api/tkdl?k=' + L.token('dl', id, 0)), r); assert.match(r.headers.location, /\/toolkit$/);
+  const t = decodeURIComponent(mail.text.match(/t=([^\s]+)/)[1]);
+  r = rs(); await conf(mk('GET', '/api/confirm?s=tk&t=' + encodeURIComponent(t)), r); assert.match(r.headers.location, /toolkit-bestaetigt#k=/);
+  const k = r.headers.location.split('#k=')[1];
+  r = rs(); await tkdl(mk('GET', '/api/tkdl?k=' + k), r); assert.equal(r.statusCode, 200); assert.equal(r.headers['content-type'], 'application/zip'); assert.equal(String(r.body), 'PK-test');
+  r = rs(); await tksub(mk('POST', '/api/tksub', { email: 't@test.de', consent: true }), r); assert.ok(require('../api/_lw').sendMail.last.text.includes('/toolkit-bestaetigt#k='));
+});
