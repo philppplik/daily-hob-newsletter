@@ -22,8 +22,8 @@ module.exports = async (req, res) => {
     from: IW.IW_FROM,
     replyTo: null, // keine ungepruefte IW-Antwortadresse erfinden
     subject: 'Bitte bestätigen: Tagesbericht von Intelligenz Welt',
-    text: 'Hallo,\n\nbitte bestätige deine Anmeldung zum kostenlosen PDF-Zugang zur täglichen Tagesausgabe von Intelligenz Welt:\n\n' + link + '\n\nDer Link ist 48 Stunden gültig. Wenn du dich nicht angemeldet hast, ignoriere diese E-Mail, es passiert nichts.\n\nVersand über Resend (USA) als Auftragsverarbeiter. Datenschutz: ' + IW.SITE_IW + '/datenschutz\nIntelligenz Welt, Philipp Paulik, ' + IW.SITE_IW + '/impressum\n',
-    html: '<p>Hallo,</p><p>bitte bestätige deine Anmeldung zum kostenlosen PDF-Zugang zur täglichen Tagesausgabe von Intelligenz Welt:</p><p><a href="' + link + '">Anmeldung bestätigen</a></p><p>Der Link ist 48 Stunden gültig. Wenn du dich nicht angemeldet hast, ignoriere diese E-Mail, es passiert nichts.</p><p style="color:#666;font-size:12px">Versand über Resend (USA) als Auftragsverarbeiter. <a href="' + IW.SITE_IW + '/datenschutz">Datenschutz</a> · <a href="' + IW.SITE_IW + '/impressum">Impressum</a></p>'
+    text: 'Hallo,\n\nbitte bestätige deine Anmeldung zum kostenlosen PDF-Zugang zur täglichen Tagesausgabe von Intelligenz Welt:\n\n' + link + '\n\nDer Link ist 48 Stunden gültig. Wenn du dich nicht angemeldet hast, ignoriere diese E-Mail, es passiert nichts.\n\nVersand über Resend (PLUS FIVE FIVE, Inc., USA). Datenschutz: ' + IW.SITE_IW + '/datenschutz\nIntelligenz Welt, Philipp Paulik, ' + IW.SITE_IW + '/impressum\n',
+    html: '<p>Hallo,</p><p>bitte bestätige deine Anmeldung zum kostenlosen PDF-Zugang zur täglichen Tagesausgabe von Intelligenz Welt:</p><p><a href="' + link + '">Anmeldung bestätigen</a></p><p>Der Link ist 48 Stunden gültig. Wenn du dich nicht angemeldet hast, ignoriere diese E-Mail, es passiert nichts.</p><p style="color:#666;font-size:12px">Versand über Resend (PLUS FIVE FIVE, Inc., USA). <a href="' + IW.SITE_IW + '/datenschutz">Datenschutz</a> · <a href="' + IW.SITE_IW + '/impressum">Impressum</a></p>'
   });
   L.json(res, 200, { ok: true });
 };

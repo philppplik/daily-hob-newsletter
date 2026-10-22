@@ -3,7 +3,7 @@
 // Gleiche Primitive wie KIFB (_lw), aber strikt getrennte Einwilligung: nur Tagesbericht-PDF, kein Newsletter, kein Shop.
 const L = require('../_lw');
 const SITE_IW = L.SITE_IW;
-const IW_TEXT_VERSION = 'iw-2026-10-23-v1'; // Einwilligungstext IW PDF-Zugang Tagesausgabe (23.10.2026)
+const IW_TEXT_VERSION = 'iw-2026-10-23-v2'; // Einwilligungstext IW PDF-Zugang Tagesausgabe (23.10.2026)
 const IW_FROM = process.env.IW_MAIL_FROM || 'Intelligenz Welt <briefing@hob.philipp-paulik.de>'; // verifizierte Absenderdomain, kein unverifizierter IW-Absender
 const iwStore = L.storeFor('optin-iw/');
 // Report-PDFs: unratbarer deterministischer Pfad (Datum + HMAC), niemals oeffentlich verlinkt.
