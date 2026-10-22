@@ -9,7 +9,7 @@ const rs = () => { const r = { headers: {}, setHeader(k, v) { this.headers[k.toL
 test('IW DOI flow: no PDF before confirm, own records, no segment, unsubscribe works', async () => {
   let r = rs(); await sub(mk('POST', '/lw/api/iwsub', { email: 'I@Test.de', consent: true }), r); assert.equal(r.statusCode, 200);
   const mail = require('../api/_lw').sendMail.last;
-  assert.ok(mail.text.includes('/api/lw-confirm?t=')); assert.ok(mail.text.includes('s=iw'));
+  assert.ok(mail.text.includes('/api/confirm?s=iw&t=')); assert.ok(mail.text.includes('s=iw'));
   assert.equal(mail.from, IW.IW_FROM, 'IW display name on the verified sender domain');
   assert.equal(mail.replyTo, null, 'no invented IW reply address');
   assert.ok(!/\.pdf/.test(mail.html + mail.text), 'DOI mail must not contain the PDF');
@@ -24,7 +24,7 @@ test('IW DOI flow: no PDF before confirm, own records, no segment, unsubscribe w
   // wrong-purpose token (KIFB doi/dl) must not confirm or download
   assert.equal(L.verify('dl-iw', L.token('dl', id, 0)), null, 'KIFB dl token has no IW meaning');
   let segN = 0; const origSeg = L.addToSegment; L.addToSegment = async () => { segN++; };
-  r = rs(); await conf(mk('GET', '/api/lw-confirm?t=' + encodeURIComponent(t) + '&s=iw'), r);
+  r = rs(); await conf(mk('GET', '/api/confirm?s=iw&t=' + encodeURIComponent(t)), r);
   assert.match(r.headers.location, /intelligenz-welt\.de\/tagesbericht-bestaetigt#k=/);
   assert.equal(segN, 0, 'IW confirm must not join any Resend segment (PDF access only, no daily send in this consent)');
   L.addToSegment = origSeg;

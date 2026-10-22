@@ -16,7 +16,7 @@ module.exports = async (req, res) => {
   const rec = { email, source: 'iw', signupAt: new Date().toISOString(), signupIp: L.ip(req), textVersion: IW.IW_TEXT_VERSION, confirmedAt: null, confirmIp: null, unsubscribedAt: null };
   await IW.iwStore.put(id, rec);
   const t = L.token('doi-iw', id, 48 * 3600);
-  const link = L.API + '/api/lw-confirm?t=' + encodeURIComponent(t) + '&s=iw';
+  const link = L.API + '/api/confirm?s=iw&t=' + encodeURIComponent(t);
   await L.sendMail({
     to: email,
     from: IW.IW_FROM,
