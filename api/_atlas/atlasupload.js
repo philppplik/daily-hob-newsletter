@@ -1,6 +1,6 @@
 // ZIP-Upload des Atlas-Datenpakets aus dem KIFB-Workflow in den privaten Blob. Auth: HMAC ueber "upload:atlas:<version>".
 const crypto = require('crypto');
-const { sign, atlasPath } = require('./_lw');
+const { sign, atlasPath } = require('../_lw');
 module.exports = async (req, res) => {
   if (req.method !== 'POST') return res.status(405).end();
   const v = String(req.query.v || '');

@@ -1,5 +1,5 @@
 'use strict';
-const L = require('./_lw');
+const L = require('../_lw');
 // GET ?k=<download token>. Checks the subscriber, then streams the atlas data ZIP from private storage.
 module.exports = async (req, res) => {
   const k = new URL(req.url, 'http://x').searchParams.get('k');

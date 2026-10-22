@@ -3,7 +3,7 @@ process.env.LW_SECRET = 'x'.repeat(40); process.env.LW_STORE = 'memory'; process
 const test = require('node:test'); const assert = require('node:assert');
 const L = require('../api/_lw'); const sub = require('../api/lw-subscribe'); const conf = require('../api/lw-confirm'); const pdf = require('../api/lw-pdf'); const un = require('../api/lw-unsub');
 const mk = (method, url, body) => ({ method, url, headers: { 'x-forwarded-for': '203.0.113.9' }, body });
-const rs = () => { const r = { headers: {}, setHeader(k, v) { this.headers[k.toLowerCase()] = v; }, end(b) { this.body = b; } }; return r; };
+const rs = () => { const r = { headers: {}, setHeader(k, v) { this.headers[k.toLowerCase()] = v; }, status(c) { this.statusCode = c; return this; }, end(b) { this.body = b; } }; return r; };
 test('DOI flow: no PDF before confirm, log filled, unsubscribe works', async () => {
   let r = rs(); await sub(mk('POST', '/api/subscribe', { email: 'A@Test.de', consent: true }), r); assert.equal(r.statusCode, 200);
   const mail = require('../api/_lw').sendMail.last; assert.ok(mail.text.includes('/api/confirm?t='));
@@ -44,7 +44,7 @@ test('toolkit flow: DOI -> confirm -> ZIP only after confirm', async () => {
 });
 
 test('atlas flow: DOI -> confirm -> ZIP only after confirm', async () => {
-  const asub = require('../api/lw-atlassub'), adl = require('../api/lw-atlasdl');
+  const asub = require('../api/_atlas/atlassub'), adl = require('../api/_atlas/atlasdl');
   let r = rs(); await asub(mk('POST', '/api/atlassub', { email: 'M@Test.de', consent: true }), r); assert.equal(r.statusCode, 200);
   const mail = require('../api/_lw').sendMail.last; assert.ok(mail.text.includes('s=atlas'));
   assert.ok(!/\.zip/.test(mail.html + mail.text)); assert.ok(!/<img/i.test(mail.html));
@@ -57,4 +57,13 @@ test('atlas flow: DOI -> confirm -> ZIP only after confirm', async () => {
   assert.equal(aSegN, 0, 'atlas confirm must not join the Tagesbericht segment'); L.addToSegment = aOrigSeg;
   const k = r.headers.location.split('#k=')[1];
   r = rs(); await adl(mk('GET', '/api/atlasdl?k=' + k), r); assert.equal(r.statusCode, 200); assert.equal(r.headers['content-type'], 'application/zip'); assert.equal(String(r.body), 'PK-test');
+});
+
+test('atlas dispatcher routes by action and rejects unknown', async () => {
+  const disp = require('../api/lw-atlas/[action]');
+  let r = rs(); await disp({ method: 'GET', url: '/api/lw-atlas/dl?action=dl&k=x', headers: {}, query: { action: 'dl' } }, r);
+  assert.ok(r.headers.location, 'routed to dl handler (redirect), not the dispatcher 404');
+  assert.notEqual(r.statusCode, 404);
+  r = rs(); await disp({ method: 'GET', url: '/api/lw-atlas/nope', headers: {}, query: { action: 'nope' } }, r);
+  assert.equal(r.statusCode, 404);
 });

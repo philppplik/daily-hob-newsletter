@@ -4,6 +4,18 @@
  ],
  "rewrites": [
   {
+   "source": "/lw/api/atlassub",
+   "destination": "/api/lw-atlas/sub"
+  },
+  {
+   "source": "/lw/api/atlasdl",
+   "destination": "/api/lw-atlas/dl"
+  },
+  {
+   "source": "/lw/api/atlasupload",
+   "destination": "/api/lw-atlas/upload"
+  },
+  {
    "source": "/lw/api/:n",
    "destination": "/api/lw-:n"
   }
