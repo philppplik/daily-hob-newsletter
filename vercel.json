@@ -16,6 +16,22 @@
    "destination": "/api/lw-atlas/upload"
   },
   {
+   "source": "/lw/api/iwsub",
+   "destination": "/api/lw-iw/sub"
+  },
+  {
+   "source": "/lw/api/iwpdf",
+   "destination": "/api/lw-iw/pdf"
+  },
+  {
+   "source": "/lw/api/iwupload",
+   "destination": "/api/lw-iw/upload"
+  },
+  {
+   "source": "/lw/api/iwunsub",
+   "destination": "/api/lw-iw/unsub"
+  },
+  {
    "source": "/lw/api/:n",
    "destination": "/api/lw-:n"
   }
