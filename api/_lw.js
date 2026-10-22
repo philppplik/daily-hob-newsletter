@@ -2,6 +2,8 @@
 // Lead-Wall backend helpers. No npm dependencies: Node fetch + crypto only.
 const crypto = require('crypto');
 const TK_TEXT_VERSION = 'tk-2026-10-20-v1'; // Einwilligungstext Toolkit-Download
+const ATLAS_TEXT_VERSION = 'atlas-2026-10-22-v1'; // Einwilligungstext Modell-Atlas-Datenpaket
+const ATLAS_VERSION = '1.0';
 const TK_VERSION = '1.0';
 const TEXT_VERSION = 'lw-2026-10-20-v1'; // Einwilligungstext Baustein 6.1 (Rechtspapier 20.10.2026)
 const SITE = process.env.SITE_URL || 'https://kifachblatt.de';
@@ -108,6 +110,14 @@ async function fetchToolkit(v) {
   const r = await fetch(blobHost() + '/' + toolkitPath(v) + '?cache=0', { headers: blobAuth() });
   return r.ok ? Buffer.from(await r.arrayBuffer()) : null;
 }
+// Atlas data package (ZIP: radar PDF + CSV + JSON): private Blob, unguessable path (version + HMAC),
+// streamed only after the subscriber check. Upload via /api/atlasupload (HMAC), never linked publicly.
+const atlasPath = (v) => 'atlas/modell-atlas-datenpaket-v' + v + '-' + sign('atlas:' + v).slice(0, 24) + '.zip';
+async function fetchAtlas(v) {
+  if (process.env.LW_STORE === 'memory') return (global.__atlas || {})[v] || null;
+  const r = await fetch(blobHost() + '/' + atlasPath(v) + '?cache=0', { headers: blobAuth() });
+  return r.ok ? Buffer.from(await r.arrayBuffer()) : null;
+}
 // KIFB list lives in its own Resend segment (never the Daily Hob one). Found by name, created once.
 let segCache = null;
 async function segmentId() {
@@ -127,4 +137,4 @@ async function addToSegment(email) {
   let r = await fetch('https://api.resend.com/contacts', { method: 'POST', headers: h, body: JSON.stringify({ email, unsubscribed: false, segments: [{ id }] }) });
   if (!r.ok) await fetch('https://api.resend.com/contacts/' + encodeURIComponent(email) + '/segments/' + id, { method: 'POST', headers: h });
 }
-module.exports = { TK_TEXT_VERSION, TK_VERSION, toolkitPath, fetchToolkit, sign, reportPath, fetchReport, latestReport, addToSegment, TEXT_VERSION, SITE, API, idOf, norm, validEmail, token, verify, store, sendMail, cors, json, redirect, ip, readBody };
+module.exports = { ATLAS_TEXT_VERSION, ATLAS_VERSION, atlasPath, fetchAtlas, TK_TEXT_VERSION, TK_VERSION, toolkitPath, fetchToolkit, sign, reportPath, fetchReport, latestReport, addToSegment, TEXT_VERSION, SITE, API, idOf, norm, validEmail, token, verify, store, sendMail, cors, json, redirect, ip, readBody };

@@ -4,12 +4,14 @@ const L = require('./_lw');
 module.exports = async (req, res) => {
   const t = new URL(req.url, 'http://x').searchParams.get('t');
   const id = L.verify('doi', t);
-  const tk0 = new URL(req.url, 'http://x').searchParams.get('s') === 'tk';
-  if (!id) return L.redirect(res, L.SITE + (tk0 ? '/toolkit-bestaetigt' : '/tagesbericht-bestaetigt') + '?e=1');
+  const s0 = new URL(req.url, 'http://x').searchParams.get('s');
+  const page0 = s0 === 'tk' ? '/toolkit-bestaetigt' : s0 === 'atlas' ? '/atlas-daten-bestaetigt' : '/tagesbericht-bestaetigt';
+  if (!id) return L.redirect(res, L.SITE + page0 + '?e=1');
   const rec = await L.store.get(id);
   if (!rec) return L.redirect(res, L.SITE + '/tagesbericht-bestaetigt?e=1');
   if (!rec.confirmedAt) { rec.confirmedAt = new Date().toISOString(); rec.confirmIp = L.ip(req); rec.unsubscribedAt = null; await L.store.put(id, rec); await L.addToSegment(rec.email); }
   const dl = L.token('dl', id, 0);
-  const tk = new URL(req.url, 'http://x').searchParams.get('s') === 'tk';
-  L.redirect(res, L.SITE + (tk ? '/toolkit-bestaetigt' : '/tagesbericht-bestaetigt') + '#k=' + dl); // fragment: not sent to servers or logs
+  const sp = new URL(req.url, 'http://x').searchParams.get('s');
+  const page = sp === 'tk' ? '/toolkit-bestaetigt' : sp === 'atlas' ? '/atlas-daten-bestaetigt' : '/tagesbericht-bestaetigt';
+  L.redirect(res, L.SITE + page + '#k=' + dl); // fragment: not sent to servers or logs
 };

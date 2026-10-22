@@ -40,3 +40,17 @@ test('toolkit flow: DOI -> confirm -> ZIP only after confirm', async () => {
   r = rs(); await tkdl(mk('GET', '/api/tkdl?k=' + k), r); assert.equal(r.statusCode, 200); assert.equal(r.headers['content-type'], 'application/zip'); assert.equal(String(r.body), 'PK-test');
   r = rs(); await tksub(mk('POST', '/api/tksub', { email: 't@test.de', consent: true }), r); assert.ok(require('../api/_lw').sendMail.last.text.includes('/toolkit-bestaetigt#k='));
 });
+
+test('atlas flow: DOI -> confirm -> ZIP only after confirm', async () => {
+  const asub = require('../api/lw-atlassub'), adl = require('../api/lw-atlasdl');
+  let r = rs(); await asub(mk('POST', '/api/atlassub', { email: 'M@Test.de', consent: true }), r); assert.equal(r.statusCode, 200);
+  const mail = require('../api/_lw').sendMail.last; assert.ok(mail.text.includes('s=atlas'));
+  assert.ok(!/\.zip/.test(mail.html + mail.text)); assert.ok(!/<img/i.test(mail.html));
+  const id = L.idOf('m@test.de'); assert.equal((await L.store.get(id)).textVersion, L.ATLAS_TEXT_VERSION);
+  global.__atlas = { [L.ATLAS_VERSION]: Buffer.from('PK-test') };
+  r = rs(); await adl(mk('GET', '/api/atlasdl?k=' + L.token('dl', id, 0)), r); assert.match(r.headers.location, /\/atlas-daten-anmelden$/);
+  const t = decodeURIComponent(mail.text.match(/t=([^\s]+)/)[1]);
+  r = rs(); await conf(mk('GET', '/api/confirm?s=atlas&t=' + encodeURIComponent(t)), r); assert.match(r.headers.location, /atlas-daten-bestaetigt#k=/);
+  const k = r.headers.location.split('#k=')[1];
+  r = rs(); await adl(mk('GET', '/api/atlasdl?k=' + k), r); assert.equal(r.statusCode, 200); assert.equal(r.headers['content-type'], 'application/zip'); assert.equal(String(r.body), 'PK-test');
+});
