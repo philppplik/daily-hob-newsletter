@@ -104,10 +104,14 @@ async function fetchReport(date) {
   return r.ok ? Buffer.from(await r.arrayBuffer()) : null;
 }
 async function latestReport() {
+  // Ausgabedatum ist Europe/Berlin (Dateiname), nicht UTC: um 00-02 Uhr MESZ weichen beide ab.
+  const berlin = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Berlin' });
+  const days = [berlin];
   for (let i = 0; i < 8; i++) {
     const d = new Date(Date.now() - i * 864e5).toISOString().slice(0, 10);
-    const b = await fetchReport(d); if (b) return { date: d, buf: b };
+    if (!days.includes(d)) days.push(d);
   }
+  for (const d of days) { const b = await fetchReport(d); if (b) return { date: d, buf: b }; }
   return null;
 }
 // Toolkit ZIP: private Blob, unguessable path (version + HMAC), streamed only after the subscriber check.
