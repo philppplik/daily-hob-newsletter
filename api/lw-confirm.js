@@ -9,7 +9,7 @@ module.exports = async (req, res) => {
   if (!id) return L.redirect(res, L.SITE + page0 + '?e=1');
   const rec = await L.store.get(id);
   if (!rec) return L.redirect(res, L.SITE + '/tagesbericht-bestaetigt?e=1');
-  if (!rec.confirmedAt) { rec.confirmedAt = new Date().toISOString(); rec.confirmIp = L.ip(req); rec.unsubscribedAt = null; await L.store.put(id, rec); await L.addToSegment(rec.email); }
+  if (!rec.confirmedAt) { rec.confirmedAt = new Date().toISOString(); rec.confirmIp = L.ip(req); rec.unsubscribedAt = null; await L.store.put(id, rec); if (rec.source !== 'atlas') await L.addToSegment(rec.email); } // atlas consent covers the data package only, not the Tagesbericht segment
   const dl = L.token('dl', id, 0);
   const sp = new URL(req.url, 'http://x').searchParams.get('s');
   const page = sp === 'tk' ? '/toolkit-bestaetigt' : sp === 'atlas' ? '/atlas-daten-bestaetigt' : '/tagesbericht-bestaetigt';
