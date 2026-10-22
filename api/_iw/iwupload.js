@@ -7,7 +7,11 @@ module.exports = async (req, res) => {
   if (req.method !== 'POST') return res.status(405).end();
   const date = String(req.query.date || '');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).end();
-  const got = Buffer.from(String(req.headers['x-lw-auth'] || '')), want = Buffer.from(L.sign('upload:iwreport:' + date));
+  // Upload-only credential: IW_UPLOAD_SECRET signs only this endpoint (fallback: LW_SECRET).
+  // Ein kompromittiertes Repo-Secret kann damit keine Abonnenten-Tokens faelschen.
+  const key = process.env.IW_UPLOAD_SECRET || process.env.LW_SECRET || '';
+  const want = Buffer.from(require('crypto').createHmac('sha256', key).update('upload:iwreport:' + date).digest('base64url'));
+  const got = Buffer.from(String(req.headers['x-lw-auth'] || ''));
   if (got.length !== want.length || !crypto.timingSafeEqual(got, want)) return res.status(401).end();
   const chunks = []; let n = 0;
   for await (const c of req) { n += c.length; if (n > 4000000) return res.status(413).end(); chunks.push(c); }

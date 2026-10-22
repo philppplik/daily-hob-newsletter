@@ -65,6 +65,13 @@ test('IW upload: HMAC gate and path', async () => {
   try { await up(mkUp(good), r); assert.notEqual(r.statusCode, 401); } catch (e) { assert.ok(true, 'blob unreachable without token is fine here'); }
   assert.ok(IW.iwReportPath(date).startsWith('reports-iw/intelligenz-welt-tagesausgabe-' + date + '-'));
   assert.ok(IW.iwReportPath(date).endsWith('.pdf'));
+  // IW_UPLOAD_SECRET takes precedence over the shared LW_SECRET (upload-only credential)
+  process.env.IW_UPLOAD_SECRET = 'y'.repeat(40);
+  const iwGood = crypto.createHmac('sha256', process.env.IW_UPLOAD_SECRET).update('upload:iwreport:' + date).digest('base64url');
+  r = rs(); r.json = (o) => { r.body = o; }; await up(mkUp(good), r); assert.equal(r.statusCode, 401, 'LW_SECRET-derived HMAC rejected while IW_UPLOAD_SECRET is set');
+  r = rs(); r.json = (o) => { r.body = o; };
+  try { await up(mkUp(iwGood), r); assert.notEqual(r.statusCode, 401); } catch (e) { assert.ok(true); }
+  delete process.env.IW_UPLOAD_SECRET;
 });
 
 test('IW dispatcher routes by action and rejects unknown', async () => {
