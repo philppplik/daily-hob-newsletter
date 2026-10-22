@@ -67,3 +67,14 @@ test('atlas dispatcher routes by action and rejects unknown', async () => {
   r = rs(); await disp({ method: 'GET', url: '/api/lw-atlas/nope', headers: {}, query: { action: 'nope' } }, r);
   assert.equal(r.statusCode, 404);
 });
+
+test('atlas: expired tokens are rejected (dl and doi)', async () => {
+  const adl = require('../api/_atlas/atlasdl'), conf2 = require('../api/lw-confirm');
+  const id = L.idOf('exp@test.de');
+  await L.store.put(id, { email: 'exp@test.de', signupAt: new Date().toISOString(), signupIp: '203.0.113.9', textVersion: L.ATLAS_TEXT_VERSION, source: 'atlas', confirmedAt: new Date().toISOString(), confirmIp: '203.0.113.9', unsubscribedAt: null });
+  global.__atlas = { [L.ATLAS_VERSION]: Buffer.from('PK-test') };
+  let r = rs(); await adl(mk('GET', '/api/atlasdl?k=' + L.token('dl', id, -3600)), r);
+  assert.match(r.headers.location, /atlas-daten-anmelden/, 'expired dl token must not get the ZIP');
+  r = rs(); await conf2(mk('GET', '/api/confirm?s=atlas&t=' + encodeURIComponent(L.token('doi', id, -3600))), r);
+  assert.match(r.headers.location, /atlas-daten-bestaetigt\?e=1/, 'expired doi token must fail closed');
+});
