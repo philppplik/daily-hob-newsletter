@@ -19,8 +19,8 @@ module.exports = async (req, res) => {
   await L.sendMail({
     to: email,
     subject: 'Bitte bestätigen: KI-Tagesbericht des KI Fachblatts',
-    text: 'Hallo,\n\nbitte bestätige deine Anmeldung zum kostenlosen KI-Tagesbericht des KI Fachblatts:\n\n' + link + '\n\nDer Link ist 48 Stunden gültig. Wenn du dich nicht angemeldet hast, ignoriere diese E-Mail, es passiert nichts.\n\nVersand über Resend (USA) als Auftragsverarbeiter. Datenschutz: ' + L.SITE + '/datenschutz\nKI Fachblatt, Philipp Paulik, ' + L.SITE + '/impressum\n',
-    html: '<p>Hallo,</p><p>bitte bestätige deine Anmeldung zum kostenlosen KI-Tagesbericht des KI Fachblatts:</p><p><a href="' + link + '">Anmeldung bestätigen</a></p><p>Der Link ist 48 Stunden gültig. Wenn du dich nicht angemeldet hast, ignoriere diese E-Mail, es passiert nichts.</p><p style="color:#666;font-size:12px">Versand über Resend (USA) als Auftragsverarbeiter. <a href="' + L.SITE + '/datenschutz">Datenschutz</a> · <a href="' + L.SITE + '/impressum">Impressum</a></p>'
+    text: 'Hallo,\n\nbitte bestätige deine Anmeldung zum kostenlosen KI-Tagesbericht des KI Fachblatts:\n\n' + link + '\n\nDer Link ist 48 Stunden gültig. Wenn du dich nicht angemeldet hast, ignoriere diese E-Mail, es passiert nichts.\n\nVersand über Resend (PLUS FIVE FIVE, Inc., USA). Datenschutz: ' + L.SITE + '/datenschutz\nKI Fachblatt, Philipp Paulik, ' + L.SITE + '/impressum\n',
+    html: '<p>Hallo,</p><p>bitte bestätige deine Anmeldung zum kostenlosen KI-Tagesbericht des KI Fachblatts:</p><p><a href="' + link + '">Anmeldung bestätigen</a></p><p>Der Link ist 48 Stunden gültig. Wenn du dich nicht angemeldet hast, ignoriere diese E-Mail, es passiert nichts.</p><p style="color:#666;font-size:12px">Versand über Resend (PLUS FIVE FIVE, Inc., USA). <a href="' + L.SITE + '/datenschutz">Datenschutz</a> · <a href="' + L.SITE + '/impressum">Impressum</a></p>'
   });
   L.json(res, 200, { ok: true });
 };
