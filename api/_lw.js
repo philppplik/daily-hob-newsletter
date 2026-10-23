@@ -1,11 +1,11 @@
 'use strict';
 // Lead-Wall backend helpers. No npm dependencies: Node fetch + crypto only.
 const crypto = require('crypto');
-const TK_TEXT_VERSION = 'tk-2026-10-20-v1'; // Einwilligungstext Toolkit-Download
-const ATLAS_TEXT_VERSION = 'atlas-2026-10-22-v1'; // Einwilligungstext Modell-Atlas-Datenpaket
+const TK_TEXT_VERSION = 'tk-2026-10-23-v2'; // Einwilligungstext Toolkit-Download
+const ATLAS_TEXT_VERSION = 'atlas-2026-10-23-v2'; // Einwilligungstext Modell-Atlas-Datenpaket
 const ATLAS_VERSION = '1.0';
 const TK_VERSION = '1.0';
-const TEXT_VERSION = 'lw-2026-10-20-v1'; // Einwilligungstext Baustein 6.1 (Rechtspapier 20.10.2026)
+const TEXT_VERSION = 'lw-2026-10-23-v2'; // Einwilligungstext Baustein 6.1 (Rechtspapier 20.10.2026)
 const SITE = process.env.SITE_URL || 'https://kifachblatt.de';
 const SITE_IW = process.env.IW_SITE_URL || 'https://intelligenz-welt.de';
 const API = process.env.API_URL || '';
