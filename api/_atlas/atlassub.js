@@ -1,8 +1,8 @@
 'use strict';
 const L = require('../_lw');
 // POST {email, consent:true, website:''} -> DOI mail (new) or download-link mail (already confirmed). No download before confirmation.
-const FOOT_T = '\n\nVersand über Resend (USA) als Auftragsverarbeiter. Datenschutz: ' + L.SITE + '/datenschutz\nKI Fachblatt, Philipp Paulik, ' + L.SITE + '/impressum\n';
-const FOOT_H = '<p style="color:#666;font-size:12px">Versand über Resend (USA) als Auftragsverarbeiter. <a href="' + L.SITE + '/datenschutz">Datenschutz</a> · <a href="' + L.SITE + '/impressum">Impressum</a></p>';
+const FOOT_T = '\n\nVersand über Resend (PLUS FIVE FIVE, Inc., USA). Datenschutz: ' + L.SITE + '/datenschutz\nKI Fachblatt, Philipp Paulik, ' + L.SITE + '/impressum\n';
+const FOOT_H = '<p style="color:#666;font-size:12px">Versand über Resend (PLUS FIVE FIVE, Inc., USA). <a href="' + L.SITE + '/datenschutz">Datenschutz</a> · <a href="' + L.SITE + '/impressum">Impressum</a></p>';
 module.exports = async (req, res) => {
   if (L.cors(req, res)) return;
   if (req.method !== 'POST') return L.json(res, 405, { ok: false });
