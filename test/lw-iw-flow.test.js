@@ -2,11 +2,11 @@
 process.env.LW_SECRET = 'x'.repeat(40); process.env.LW_STORE = 'memory'; process.env.LW_MAIL = 'dry'; process.env.API_URL = 'https://api.test';
 const test = require('node:test'); const assert = require('node:assert');
 const L = require('../api/_lw'); const IW = require('../api/_iw/iwlib');
-const sub = require('../api/_iw/iwsub'); const conf = require('../api/lw-confirm'); const pdf = require('../api/_iw/iwpdf'); const un = require('../api/_iw/iwunsub');
+const sub = require('../api/_iw/iwsub'); const conf = require('../api/_lwh/confirm'); const pdf = require('../api/_iw/iwpdf'); const un = require('../api/_iw/iwunsub');
 const mk = (method, url, body) => ({ method, url, headers: { 'x-forwarded-for': '203.0.113.9' }, body });
 const rs = () => { const r = { headers: {}, setHeader(k, v) { this.headers[k.toLowerCase()] = v; }, status(c) { this.statusCode = c; return this; }, end(b) { this.body = b; } }; return r; };
 
-test('IW DOI flow: no PDF before confirm, own records, no segment, unsubscribe works', async () => {
+test('IW DOI flow: no PDF before confirm, own records, weekly via nlOptIn record (no segment), unsubscribe works', async () => {
   let r = rs(); await sub(mk('POST', '/lw/api/iwsub', { email: 'I@Test.de', consent: true }), r); assert.equal(r.statusCode, 200);
   const mail = require('../api/_lw').sendMail.last;
   assert.ok(mail.text.includes('/api/confirm?s=iw&t=')); assert.ok(mail.text.includes('s=iw'));
@@ -23,10 +23,10 @@ test('IW DOI flow: no PDF before confirm, own records, no segment, unsubscribe w
   r = rs(); await pdf(mk('GET', '/lw/api/iwpdf?k=' + L.token('dl-iw', id, 0)), r); assert.match(r.headers.location, /intelligenz-welt\.de\/tagesbericht-anmelden/);
   // wrong-purpose token (KIFB doi/dl) must not confirm or download
   assert.equal(L.verify('dl-iw', L.token('dl', id, 0)), null, 'KIFB dl token has no IW meaning');
-  let segN = 0; const origSeg = L.addToSegment; L.addToSegment = async () => { segN++; };
+    let segNames = []; const origSeg = L.addToSegment; L.addToSegment = async (e, n) => { segNames.push(n || 'KI Fachblatt Tagesbericht'); };
   r = rs(); await conf(mk('GET', '/api/confirm?s=iw&t=' + encodeURIComponent(t)), r);
   assert.match(r.headers.location, /intelligenz-welt\.de\/tagesbericht-bestaetigt#k=/);
-  assert.equal(segN, 0, 'IW confirm must not join any Resend segment (PDF access only, no daily send in this consent)');
+  assert.deepEqual(segNames, [], 'IW v4 confirm joins no segment; weekly eligibility comes from nlOptIn record');
   L.addToSegment = origSeg;
   rec = await IW.iwStore.get(id); assert.ok(rec.confirmedAt && rec.confirmIp);
   const k = r.headers.location.split('#k=')[1];

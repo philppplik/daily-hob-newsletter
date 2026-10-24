@@ -13,17 +13,18 @@ module.exports = async (req, res) => {
   const id = L.idOf(email);
   const old = await IW.iwStore.get(id);
   if (old && old.confirmedAt && !old.unsubscribedAt) return L.json(res, 200, { ok: true }); // keine Enumeration
-  const rec = { email, source: 'iw', signupAt: new Date().toISOString(), signupIp: L.ip(req), textVersion: IW.IW_TEXT_VERSION, confirmedAt: null, confirmIp: null, unsubscribedAt: null };
+  const nl = b.nl === true; // separate, optional weekly opt-in
+  const rec = { email, source: 'iw', signupAt: new Date().toISOString(), signupIp: L.ip(req), textVersion: IW.IW_TEXT_VERSION, nlOptIn: nl, confirmedAt: null, confirmIp: null, unsubscribedAt: null };
   await IW.iwStore.put(id, rec);
   const t = L.token('doi-iw', id, 48 * 3600);
-  const link = L.API + '/api/confirm?s=iw&t=' + encodeURIComponent(t);
+  const link = L.apiUrl('/lw/api/confirm?s=iw&t=' + encodeURIComponent(t));
   await L.sendMail({
     to: email,
     from: IW.IW_FROM,
     replyTo: null, // keine ungepruefte IW-Antwortadresse erfinden
-    subject: 'Bitte bestätigen: Tagesbericht von Intelligenz Welt',
-    text: 'Hallo,\n\nbitte bestätige deine Anmeldung zum kostenlosen PDF-Zugang zur täglichen Tagesausgabe von Intelligenz Welt:\n\n' + link + '\n\nDer Link ist 48 Stunden gültig. Wenn du dich nicht angemeldet hast, ignoriere diese E-Mail, es passiert nichts.\n\nVersand über Resend (PLUS FIVE FIVE, Inc., USA). Datenschutz: ' + IW.SITE_IW + '/datenschutz\nIntelligenz Welt, Philipp Paulik, ' + IW.SITE_IW + '/impressum\n',
-    html: '<p>Hallo,</p><p>bitte bestätige deine Anmeldung zum kostenlosen PDF-Zugang zur täglichen Tagesausgabe von Intelligenz Welt:</p><p><a href="' + link + '">Anmeldung bestätigen</a></p><p>Der Link ist 48 Stunden gültig. Wenn du dich nicht angemeldet hast, ignoriere diese E-Mail, es passiert nichts.</p><p style="color:#666;font-size:12px">Versand über Resend (PLUS FIVE FIVE, Inc., USA). <a href="' + IW.SITE_IW + '/datenschutz">Datenschutz</a> · <a href="' + IW.SITE_IW + '/impressum">Impressum</a></p>'
+    subject: 'Bitte bestätigen: Tagesausgabe' + (nl ? ' und Wochenrückblick' : '') + ' von Intelligenz Welt',
+    text: 'Hallo,\n\nbitte bestätige deine Anmeldung zum kostenlosen PDF-Zugang zur täglichen Tagesausgabe' + (nl ? ' und zum Wochenrückblick' : '') + ' von Intelligenz Welt:\n\n' + link + '\n\nDer Link ist 48 Stunden gültig. Wenn du dich nicht angemeldet hast, ignoriere diese E-Mail, es passiert nichts.\n\nVersand über Resend (PLUS FIVE FIVE, Inc., USA). Datenschutz: ' + IW.SITE_IW + '/datenschutz\nIntelligenz Welt, Philipp Paulik, ' + IW.SITE_IW + '/impressum\n',
+    html: '<p>Hallo,</p><p>bitte bestätige deine Anmeldung zum kostenlosen PDF-Zugang zur täglichen Tagesausgabe' + (nl ? ' und zum Wochenrückblick' : '') + ' von Intelligenz Welt:</p><p><a href="' + link + '">Anmeldung bestätigen</a></p><p>Der Link ist 48 Stunden gültig. Wenn du dich nicht angemeldet hast, ignoriere diese E-Mail, es passiert nichts.</p><p style="color:#666;font-size:12px">Versand über Resend (PLUS FIVE FIVE, Inc., USA). <a href="' + IW.SITE_IW + '/datenschutz">Datenschutz</a> · <a href="' + IW.SITE_IW + '/impressum">Impressum</a></p>'
   });
   L.json(res, 200, { ok: true });
 };

@@ -1,5 +1,5 @@
 'use strict';
-const L = require('./_lw');
+const L = require('../_lw');
 // POST {email, consent:true, website:''} -> DOI mail (new) or download-link mail (already confirmed). No download before confirmation.
 const FOOT_T = '\n\nVersand über Resend (PLUS FIVE FIVE, Inc., USA). Datenschutz: ' + L.SITE + '/datenschutz\nKI Fachblatt, Philipp Paulik, ' + L.SITE + '/impressum\n';
 const FOOT_H = '<p style="color:#666;font-size:12px">Versand über Resend (PLUS FIVE FIVE, Inc., USA). <a href="' + L.SITE + '/datenschutz">Datenschutz</a> · <a href="' + L.SITE + '/impressum">Impressum</a></p>';
@@ -21,12 +21,13 @@ module.exports = async (req, res) => {
       html: '<p>Hallo,</p><p>hier ist dein Download-Link zum kostenlosen EU-KI-Toolkit des KI Fachblatts:</p><p><a href="' + link + '">Toolkit herunterladen</a></p><p>Wenn du das nicht angefordert hast, ignoriere diese E-Mail.</p>' + FOOT_H });
     return L.json(res, 200, { ok: true });
   }
-  const rec = { email, signupAt: new Date().toISOString(), signupIp: L.ip(req), textVersion: L.TK_TEXT_VERSION, source: 'toolkit', confirmedAt: null, confirmIp: null, unsubscribedAt: null };
+  const nl = b.nl === true; // separate, optional weekly opt-in
+  const rec = { email, signupAt: new Date().toISOString(), signupIp: L.ip(req), textVersion: L.TK_TEXT_VERSION, source: 'toolkit', nlOptIn: nl, confirmedAt: null, confirmIp: null, unsubscribedAt: null };
   await L.store.put(id, rec);
   const t = L.token('doi', id, 48 * 3600);
-  const link = L.API + '/api/confirm?s=tk&t=' + encodeURIComponent(t);
+  const link = L.apiUrl('/lw/api/confirm?s=tk&t=' + encodeURIComponent(t));
   await L.sendMail({ to: email, subject: 'Bitte bestätigen: EU-KI-Toolkit des KI Fachblatts',
-    text: 'Hallo,\n\nbitte bestätige deine Anmeldung, damit du das kostenlose EU-KI-Toolkit des KI Fachblatts herunterladen kannst:\n\n' + link + '\n\nDer Link ist 48 Stunden gültig. Wenn du dich nicht angemeldet hast, ignoriere diese E-Mail, es passiert nichts.' + FOOT_T,
-    html: '<p>Hallo,</p><p>bitte bestätige deine Anmeldung, damit du das kostenlose EU-KI-Toolkit des KI Fachblatts herunterladen kannst:</p><p><a href="' + link + '">Anmeldung bestätigen</a></p><p>Der Link ist 48 Stunden gültig. Wenn du dich nicht angemeldet hast, ignoriere diese E-Mail, es passiert nichts.</p>' + FOOT_H });
+    text: 'Hallo,\n\nbitte bestätige deine Anmeldung, damit du das kostenlose EU-KI-Toolkit des KI Fachblatts herunterladen kannst:\n\n' + link + '\n\nMit der Bestätigung abonnierst du außerdem den KI-Tagesbericht' + (nl ? ' und den Wochenrückblick' : '') + ' des KI Fachblatts (jederzeit abbestellbar).\n\nDer Link ist 48 Stunden gültig. Wenn du dich nicht angemeldet hast, ignoriere diese E-Mail, es passiert nichts.' + FOOT_T,
+    html: '<p>Hallo,</p><p>bitte bestätige deine Anmeldung, damit du das kostenlose EU-KI-Toolkit des KI Fachblatts herunterladen kannst:</p><p><a href="' + link + '">Anmeldung bestätigen</a></p><p style="color:#666;font-size:13px">Mit der Bestätigung abonnierst du außerdem den KI-Tagesbericht' + (nl ? ' und den Wochenrückblick' : '') + ' des KI Fachblatts (jederzeit abbestellbar).</p><p>Der Link ist 48 Stunden gültig. Wenn du dich nicht angemeldet hast, ignoriere diese E-Mail, es passiert nichts.</p>' + FOOT_H });
   L.json(res, 200, { ok: true });
 };

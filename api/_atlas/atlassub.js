@@ -24,7 +24,7 @@ module.exports = async (req, res) => {
   const rec = { email, signupAt: new Date().toISOString(), signupIp: L.ip(req), textVersion: L.ATLAS_TEXT_VERSION, source: 'atlas', confirmedAt: null, confirmIp: null, unsubscribedAt: null };
   await L.store.put(id, rec);
   const t = L.token('doi', id, 48 * 3600);
-  const link = L.API + '/api/confirm?s=atlas&t=' + encodeURIComponent(t);
+  const link = L.apiUrl('/lw/api/confirm?s=atlas&t=' + encodeURIComponent(t));
   await L.sendMail({ to: email, subject: 'Bitte bestätigen: Modell-Atlas-Datenpaket des KI Fachblatts',
     text: 'Hallo,\n\nbitte bestätige deine Anmeldung, damit du das kostenlose Modell-Atlas-Datenpaket des KI Fachblatts herunterladen kannst:\n\n' + link + '\n\nDer Link ist 48 Stunden gültig. Wenn du dich nicht angemeldet hast, ignoriere diese E-Mail, es passiert nichts.' + FOOT_T,
     html: '<p>Hallo,</p><p>bitte bestätige deine Anmeldung, damit du das kostenlose Modell-Atlas-Datenpaket des KI Fachblatts herunterladen kannst:</p><p><a href="' + link + '">Anmeldung bestätigen</a></p><p>Der Link ist 48 Stunden gültig. Wenn du dich nicht angemeldet hast, ignoriere diese E-Mail, es passiert nichts.</p>' + FOOT_H });

@@ -1,6 +1,6 @@
 // PDF-Upload aus dem taeglichen Workflow in den privaten Blob. Auth: HMAC ueber "upload:<datum>".
 const crypto = require('crypto');
-const { sign, reportPath } = require('./_lw');
+const { sign, reportPath } = require('../_lw');
 module.exports = async (req, res) => {
   if (req.method !== 'POST') return res.status(405).end();
   const date = String(req.query.date || '');

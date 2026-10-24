@@ -1,5 +1,5 @@
 'use strict';
-const L = require('./_lw');
+const L = require('../_lw');
 // GET ?t=<unsub token> shows nothing, just unsubscribes (one click, no login) and redirects. List-Unsubscribe-Post also lands here.
 module.exports = async (req, res) => {
   const t = new URL(req.url, 'http://x').searchParams.get('t');

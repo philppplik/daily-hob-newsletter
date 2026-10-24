@@ -1,7 +1,7 @@
 'use strict';
 process.env.LW_SECRET = 'x'.repeat(40); process.env.LW_STORE = 'memory'; process.env.LW_MAIL = 'dry'; process.env.API_URL = 'https://api.test';
 const test = require('node:test'); const assert = require('node:assert');
-const L = require('../api/_lw'); const sub = require('../api/lw-subscribe'); const conf = require('../api/lw-confirm'); const pdf = require('../api/lw-pdf'); const un = require('../api/lw-unsub');
+const L = require('../api/_lw'); const sub = require('../api/_lwh/subscribe'); const conf = require('../api/_lwh/confirm'); const pdf = require('../api/_lwh/pdf'); const un = require('../api/_lwh/unsub');
 const mk = (method, url, body) => ({ method, url, headers: { 'x-forwarded-for': '203.0.113.9' }, body });
 const rs = () => { const r = { headers: {}, setHeader(k, v) { this.headers[k.toLowerCase()] = v; }, status(c) { this.statusCode = c; return this; }, end(b) { this.body = b; } }; return r; };
 test('DOI flow: no PDF before confirm, log filled, unsubscribe works', async () => {
@@ -13,9 +13,9 @@ test('DOI flow: no PDF before confirm, log filled, unsubscribe works', async () 
   assert.equal(rec.textVersion, L.TEXT_VERSION); assert.equal(rec.confirmedAt, null); assert.equal(rec.signupIp, '203.0.113.9');
   const t = decodeURIComponent(mail.text.match(/t=([^\s]+)/)[1]);
   r = rs(); await pdf(mk('GET', '/api/pdf?k=' + L.token('dl', id, 0)), r); assert.match(r.headers.location, /tagesbericht-anmelden/);
-  let segN = 0; const origSeg = L.addToSegment; L.addToSegment = async () => { segN++; };
+  let segNames = []; const origSeg = L.addToSegment; L.addToSegment = async (e, n) => { segNames.push(n || 'KI Fachblatt Tagesbericht'); };
   r = rs(); await conf(mk('GET', '/api/confirm?t=' + encodeURIComponent(t)), r); assert.match(r.headers.location, /tagesbericht-bestaetigt#k=/);
-  assert.equal(segN, 1, 'tagesbericht confirm joins the Tagesbericht segment'); L.addToSegment = origSeg;
+  assert.deepEqual(segNames, ['KI Fachblatt Tagesbericht'], 'v4 confirm joins only Tagesbericht segment; weekly eligibility comes from nlOptIn record, not segments'); L.addToSegment = origSeg;
   rec = await L.store.get(id); assert.ok(rec.confirmedAt && rec.confirmIp);
   const k = r.headers.location.split('#k=')[1];
   global.__reports = { [new Date().toISOString().slice(0,10)]: Buffer.from('%PDF-test') };
@@ -29,7 +29,7 @@ test('rejects missing consent, bad email, forged token', async () => {
   assert.equal(L.verify('dl', 'abc.def'), null); assert.equal(L.verify('doi', L.token('dl', 'x', 0)), null);
 });
 test('toolkit flow: DOI -> confirm -> ZIP only after confirm', async () => {
-  const tksub = require('../api/lw-tksub'), tkdl = require('../api/lw-tkdl');
+  const tksub = require('../api/_lwh/tksub'), tkdl = require('../api/_lwh/tkdl');
   let r = rs(); await tksub(mk('POST', '/api/tksub', { email: 'T@Test.de', consent: true }), r); assert.equal(r.statusCode, 200);
   const mail = require('../api/_lw').sendMail.last; assert.ok(mail.text.includes('s=tk'));
   assert.ok(!/\.zip/.test(mail.html + mail.text)); assert.ok(!/<img/i.test(mail.html));
@@ -69,7 +69,7 @@ test('atlas dispatcher routes by action and rejects unknown', async () => {
 });
 
 test('atlas: expired tokens are rejected (dl and doi)', async () => {
-  const adl = require('../api/_atlas/atlasdl'), conf2 = require('../api/lw-confirm');
+  const adl = require('../api/_atlas/atlasdl'), conf2 = require('../api/_lwh/confirm');
   const id = L.idOf('exp@test.de');
   await L.store.put(id, { email: 'exp@test.de', signupAt: new Date().toISOString(), signupIp: '203.0.113.9', textVersion: L.ATLAS_TEXT_VERSION, source: 'atlas', confirmedAt: new Date().toISOString(), confirmIp: '203.0.113.9', unsubscribedAt: null });
   global.__atlas = { [L.ATLAS_VERSION]: Buffer.from('PK-test') };

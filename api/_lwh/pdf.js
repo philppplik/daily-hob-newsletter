@@ -1,5 +1,5 @@
 'use strict';
-const L = require('./_lw');
+const L = require('../_lw');
 // GET ?k=<download token>&d=YYYY-MM-DD (optional). Checks the subscriber, then streams the PDF from private storage.
 module.exports = async (req, res) => {
   const q = new URL(req.url, 'http://x').searchParams;
