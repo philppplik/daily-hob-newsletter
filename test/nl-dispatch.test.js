@@ -16,6 +16,7 @@ function memBlob() {
     async getWithEtag(url) { const k = String(url).replace('mem://', '').split('?')[0]; const r = m.get(k); return r ? { value: JSON.parse(JSON.stringify(r.v)), etag: r.etag } : null; },
     async putCas(k, v, etag) { if (!etag) throw new Error('blob-etag-missing'); const r = m.get(k); if (!r || r.etag !== etag) return false; const e2 = 'e' + (++seq); m.set(k, { v: JSON.parse(JSON.stringify(v)), etag: e2 }); return true; },
     async del(url) { m.delete(String(url).replace('mem://', '').split('?')[0]); },
+    async status(url) { return m.has(String(url).replace('mem://', '').split('?')[0]) ? 200 : 404; },
     async list(prefix) { return [...m.keys()].filter((k) => k.startsWith(prefix)).map((k) => ({ url: 'mem://' + k, pathname: k })); }, _map: m
   };
 }
