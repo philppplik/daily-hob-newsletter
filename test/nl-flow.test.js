@@ -324,3 +324,146 @@ test('nl-weekly admin auth: additive NL_ADMIN_KEY, LW_SECRET kept, short key ign
   // user-facing tokens remain LW_SECRET-only: a doi token signed with the admin key verifies nowhere
   assert.equal(L.verify('doi', (() => { const b64 = (b) => Buffer.from(b).toString('base64url'); const id = L.idOf('t@t.de'); const body = 'doi.' + id + '.0'; return b64(body) + '.' + signWith('y'.repeat(48), body); })()), null, 'NL_ADMIN_KEY cannot mint user tokens');
 });
+
+test('probe provision: explicit empty registryUrl never falls back to production env URL', async () => {
+  const dispatch = require('../newsletter/dispatch');
+  process.env.NL_REGISTRY_URL = 'https://prod.invalid/registry.json';
+  const store = new Map();
+  let etagN = 0;
+  const ops = [];
+  const urlOf = (k) => 'https://store.invalid/' + k;
+  store.set(process.env.NL_REGISTRY_URL, { value: { v: 1, issues: {} }, etag: 'e0' });
+  const mockBlob = {
+    getWithEtag: async (u) => { ops.push('get:' + u); const e = store.get(u); return e ? { value: JSON.parse(JSON.stringify(e.value)), etag: e.etag } : null; },
+    list: async (k) => [...store.keys()].filter((u) => u === urlOf(k)).map((u) => ({ pathname: k, url: u })),
+    put: async (k, v) => { ops.push('put:' + k); store.set(urlOf(k), { value: JSON.parse(JSON.stringify(v)), etag: 'e' + (++etagN) }); return { url: urlOf(k) }; },
+    putCas: async (k, v, et) => { const u = urlOf(k); const e = store.get(u); if (!e || e.etag !== et) return false; ops.push('putCas:' + k); store.set(u, { value: JSON.parse(JSON.stringify(v)), etag: 'e' + (++etagN) }); return true; },
+    del: async (u) => { store.delete(u); return true; },
+    status: async (u) => (store.has(u) ? 200 : 404)
+  };
+  try {
+    const r = await dispatch.probeStorage({ blob: mockBlob });
+    assert.equal(r.ok, true, 'probe passes: ' + JSON.stringify(r));
+    assert.ok(ops.includes('get:' + process.env.NL_REGISTRY_URL), 'P0 read-only attestation hit the configured URL');
+    assert.ok(!ops.some((o) => o.startsWith('put') && o.includes('prod.invalid')), 'production URL never written');
+  } finally {
+    delete process.env.NL_REGISTRY_URL;
+  }
+});
+
+test('curated: duplicate leads counted once, capped at maxItems, more from full pool deduped', async () => {
+  const { applyCurated } = require('../newsletter/curated');
+  const cfg = { site: 'https://x.de', maxItems: 3, maxMore: 2 };
+  const feed = ['a','b','c','d','e','a'].map((s, i) => ({ title: 'T' + s, url: 'https://x.de/' + s + '/', ts: 100 - i }));
+  const week = { items: [], more: [], total: feed.length, _all: feed, _map: (i, n) => ({ ...i, orig: i.url }), _mapMore: (i, n) => ({ title: i.title, url: i.url + '?m=' + n }) };
+  // same URL three times + two more unique -> only 3 unique leads, dup in skipped
+  const r = applyCurated(week, { items: [{ url: 'https://x.de/a/' }, { url: 'https://x.de/a/' }, { url: 'https://x.de/a/' }, { url: 'https://x.de/b/' }, { url: 'https://x.de/c/' }, { url: 'https://x.de/d/' }] }, cfg);
+  assert.equal(r.curatedApplied, 3, 'leads capped at maxItems with unique URLs only: ' + r.curatedApplied);
+  assert.deepEqual(r.items.map((i) => i.orig), ['https://x.de/a/', 'https://x.de/b/', 'https://x.de/c/']);
+  assert.ok(r.curatedSkipped.filter((s) => s === 'https://x.de/a/').length === 2, 'duplicate leads listed in skipped');
+  assert.ok(r.curatedSkipped.includes('https://x.de/d/'), 'lead beyond maxItems listed in skipped');
+  // more = full pool minus picked, unique, capped at maxMore -> d and e (a,b,c picked; feed-dup a collapsed)
+  assert.deepEqual(r.more.map((m) => m.title), ['Td', 'Te'], 'more from full pool minus picked, unique: ' + JSON.stringify(r.more));
+});
+
+test('registry provision: configured env URL is read-only, unreadable fails closed, explicit empty never falls back', async () => {
+  const dispatch = require('../newsletter/dispatch');
+  const puts = [];
+  const readable = { getWithEtag: async (u) => (u === 'https://prod.invalid/registry.json' ? { value: { v: 1, issues: {} }, etag: 'e0' } : null), list: async () => [], put: async (k, v) => { puts.push(k); return { url: 'https://store.invalid/' + k }; }, putCas: async () => true, del: async () => true };
+  process.env.NL_REGISTRY_URL = 'https://prod.invalid/registry.json';
+  try {
+    const r1 = await dispatch.provisionRegistry({ blob: readable });
+    assert.equal(r1.created, false, 'existing configured registry: inspect only');
+    assert.equal(puts.length, 0, 'no PUT against configured registry');
+    const unread = { ...readable, getWithEtag: async () => null };
+    await assert.rejects(() => dispatch.provisionRegistry({ blob: unread }), /unreadable|fail closed/i, 'unreadable configured URL fails closed');
+    // explicit '' + list hit -> inspect only, no create
+    const listed = { ...readable, list: async (k) => [{ pathname: k, url: 'https://store.invalid/' + k }], getWithEtag: async (u) => (u.startsWith('https://store.invalid/') ? { value: { v: 1, issues: {} }, etag: 'e1' } : null) };
+    const r3 = await dispatch.provisionRegistry({ blob: listed, registryKey: 'nl-probe/x/registry.json', registryUrl: '' });
+    assert.equal(r3.created, false, 'list hit: inspect only, no blind create');
+    assert.equal(puts.length, 0, 'still no PUT');
+  } finally {
+    delete process.env.NL_REGISTRY_URL;
+  }
+});
+
+test('probe cleanup: unconfirmed delete fails closed instead of ok:true', async () => {
+  const dispatch = require('../newsletter/dispatch');
+  process.env.NL_REGISTRY_URL = 'https://prod.invalid/registry.json';
+  const store = new Map();
+  let etagN = 0;
+  const urlOf = (k) => 'https://store.invalid/' + k;
+  store.set(process.env.NL_REGISTRY_URL, { value: { v: 1, issues: {} }, etag: 'e0' });
+  const mockBlob = {
+    getWithEtag: async (u) => { const e = store.get(u); return e ? { value: JSON.parse(JSON.stringify(e.value)), etag: e.etag } : null; },
+    list: async () => [],
+    put: async (k, v) => { store.set(urlOf(k), { value: JSON.parse(JSON.stringify(v)), etag: 'e' + (++etagN) }); return { url: urlOf(k) }; },
+    putCas: async (k, v, et) => { const u = urlOf(k); const e = store.get(u); if (!e || e.etag !== et) return false; store.set(u, { value: JSON.parse(JSON.stringify(v)), etag: 'e' + (++etagN) }); return true; },
+    del: async (u) => { if (!u.endsWith('/registry.json')) store.delete(u); return true; }, // tmp deleted, probe registry survives
+    status: async (u) => (u.endsWith('/registry.json') && store.has(u) ? 500 : 404) // read-back error never proves absence
+  };
+  try {
+    const r = await dispatch.probeStorage({ blob: mockBlob });
+    assert.equal(r.ok, false, 'no-op delete must not pass: ' + JSON.stringify(r));
+    assert.equal(r.step, 'cleanup-failed', 'unconfirmed cleanup reported: ' + r.step);
+  } finally {
+    delete process.env.NL_REGISTRY_URL;
+  }
+});
+
+test('probe cleanup: early P4 failure still runs verified cleanup and keeps original step', async () => {
+  const dispatch = require('../newsletter/dispatch');
+  process.env.NL_REGISTRY_URL = 'https://prod.invalid/registry.json';
+  const store = new Map();
+  let etagN = 0;
+  const dels = [];
+  const urlOf = (k) => 'https://store.invalid/' + k;
+  store.set(process.env.NL_REGISTRY_URL, { value: { v: 1, issues: {} }, etag: 'e0' });
+  const mockBlob = {
+    getWithEtag: async (u) => { const e = store.get(u); return e ? { value: JSON.parse(JSON.stringify(e.value)), etag: e.etag } : null; },
+    list: async () => [],
+    put: async (k, v) => { store.set(urlOf(k), { value: JSON.parse(JSON.stringify(v)), etag: 'e' + (++etagN) }); return { url: urlOf(k) }; },
+    putCas: async () => false, // P4 fails immediately
+    del: async (u) => { dels.push(u); store.delete(u); return true; },
+    status: async (u) => (store.has(u) ? 200 : 404)
+  };
+  try {
+    const r = await dispatch.probeStorage({ blob: mockBlob });
+    assert.equal(r.ok, false);
+    assert.equal(r.step, 'P4-current-cas-failed', 'original finding kept: ' + JSON.stringify(r));
+    assert.ok(!r.cleanup, 'cleanup verified clean, no failure flag');
+    assert.ok(dels.some((u) => u.endsWith('/registry.json')), 'cleanup ran for created probe registry despite P4 failure');
+  } finally {
+    delete process.env.NL_REGISTRY_URL;
+  }
+});
+
+test('probe cleanup: successful PUT with failing initial verification read is still cleaned up', async () => {
+  const dispatch = require('../newsletter/dispatch');
+  process.env.NL_REGISTRY_URL = 'https://prod.invalid/registry.json';
+  const store = new Map();
+  let etagN = 0;
+  const dels = [];
+  const urlOf = (k) => 'https://store.invalid/' + k;
+  store.set(process.env.NL_REGISTRY_URL, { value: { v: 1, issues: {} }, etag: 'e0' });
+  const mockBlob = {
+    getWithEtag: async (u) => {
+      if (u === process.env.NL_REGISTRY_URL) return { value: { v: 1, issues: {} }, etag: 'e0' };
+      throw new Error('read-blows-up'); // initial verification GET after PUT fails
+    },
+    list: async () => [],
+    put: async (k, v) => { store.set(urlOf(k), { value: JSON.parse(JSON.stringify(v)), etag: 'e' + (++etagN) }); return { url: urlOf(k) }; },
+    putCas: async () => false,
+    del: async (u) => { dels.push(u); store.delete(u); return true; },
+    status: async (u) => (store.has(u) ? 200 : 404)
+  };
+  try {
+    const r = await dispatch.probeStorage({ blob: mockBlob });
+    assert.equal(r.ok, false);
+    assert.equal(r.step, 'exception', 'original read failure kept: ' + JSON.stringify(r));
+    assert.ok(!r.cleanup, 'cleanup verified clean despite the exception');
+    assert.ok(dels.some((u) => u.endsWith('/registry.json')), 'cleanup attempted for the probe registry created before the failed read');
+  } finally {
+    delete process.env.NL_REGISTRY_URL;
+  }
+});
