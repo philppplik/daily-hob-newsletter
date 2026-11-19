@@ -167,12 +167,12 @@ test('editorial pools: allowPath filters, preferPath/preferSlug rank; rest only 
   const xml2 = feedXml([
     ['wissen-neu', 'https://k.de/wissen-artikel',  'Sat, 24 Oct 2026 20:00:00 +0200'],
     ['analyse',    'https://k.de/flint-analyse',   'Sat, 24 Oct 2026 07:00:00 +0200'],
-    ['morgen-ohne-slug', 'https://k.de/deepinfer', 'Fri, 23 Oct 2026 07:30:00 +0200'],
+    ['frueh-ohne-slug', 'https://k.de/deepinfer', 'Fri, 23 Oct 2026 07:30:00 +0200'],
     ['wissen-2',   'https://k.de/noch-wissen',     'Fri, 23 Oct 2026 15:00:00 +0200']
   ]);
   const cfg2 = { ...SITES.kifb, feed: 'https://k.de/feed', site: 'https://k.de', maxItems: 4, maxMore: 4 };
   const w2 = await content.fetchWeek(cfg2, '2026-10-25', fakeFetch(xml2));
-  assert.deepEqual(w2.items.map((i) => i.title).slice(0, 2), ['analyse', 'morgen-ohne-slug']); // per-day lead = analysis
+  assert.deepEqual(w2.items.map((i) => i.title).slice(0, 2), ['analyse', 'frueh-ohne-slug']); // per-day lead = analysis
 });
 
 test('sender fail closed: sendAll and POST reject when cfg.from is null', async () => {
@@ -268,21 +268,33 @@ test('unresolved provider opt-out: nl-unsub is never false-success, bulk dispatc
   assert.equal(rec.nlUnsub.fa.provider, 'failed', 'pending opt-out durably tracked');
   // bulk dispatch must block while the opt-out is unresolved (even with all gates open)
   const nl = require('../api/_nlh/weekly');
+  // Feed stub: the original run exercised this path with the live feed inside the
+  // 2026-10-25 window; stub keeps the opt-out gate test date-independent.
+  const origFetchWeek = content.fetchWeek;
+  content.fetchWeek = async () => ({ items: [
+    { title: 'Artikel Eins', url: 'https://finanz-adjust.de/artikel/eins/', teaser: 'Teaser', cat: null, img: null, dayLabel: 'Fr 24.10.' },
+    { title: 'Artikel Zwei', url: 'https://finanz-adjust.de/artikel/zwei/', teaser: 'Teaser', cat: null, img: null, dayLabel: 'Do 23.10.' },
+    { title: 'Artikel Drei', url: 'https://finanz-adjust.de/artikel/drei/', teaser: 'Teaser', cat: null, img: null, dayLabel: 'Mi 22.10.' }
+  ], more: [], weekLabel: 'KW 43 · 18.–24. Oktober', campaign: 'kw43-2026', total: 3, extra: null });
   process.env.NL_DISPATCH_ENABLED = '1'; process.env.NL_CAS_VERIFIED = '1'; process.env.NL_REGISTRY_URL = 'https://example.invalid/registry.json';
   const auth = L.sign('nl:fa:2026-10-25');
   const mkA = (m2, u2) => ({ method: m2, url: u2, headers: { 'x-lw-auth': auth } });
-  const r2 = rs(); await nl(mkA('POST', '/lw/api/nlweekly?site=fa&date=2026-10-25'), r2);
-  assert.equal(r2.statusCode, 409, 'broadcast held while opt-out unresolved: ' + r2.statusCode + ' ' + r2.body);
-  assert.equal(JSON.parse(r2.body).error, 'optout-unresolved');
-  // provider recovers -> sweep resolves it, block lifts (dispatch now reaches sender/audience gates)
-  L.topicSubscribe = async () => {};
-  const r3 = rs(); await nl(mkA('POST', '/lw/api/nlweekly?site=fa&date=2026-10-25'), r3);
-  const j3 = JSON.parse(r3.body);
-  assert.notEqual(j3.error, 'optout-unresolved', 'block lifted after verified opt-out');
-  const rec2 = await FA.faStore.get(id);
-  assert.equal(rec2.nlUnsub.fa.provider, 'ok', 'verified provider opt-out recorded');
-  L.topicSubscribe = orig;
-  SITES.fa.segmentId = origCfg.segmentId; SITES.fa.topicId = origCfg.topicId;
-  delete process.env.NL_TOPIC_ID_FA; delete process.env.NL_SEGMENT_ID_FA;
-  delete process.env.NL_DISPATCH_ENABLED; delete process.env.NL_CAS_VERIFIED; delete process.env.NL_REGISTRY_URL;
+  try {
+    const r2 = rs(); await nl(mkA('POST', '/lw/api/nlweekly?site=fa&date=2026-10-25'), r2);
+    assert.equal(r2.statusCode, 409, 'broadcast held while opt-out unresolved: ' + r2.statusCode + ' ' + r2.body);
+    assert.equal(JSON.parse(r2.body).error, 'optout-unresolved');
+    // provider recovers -> sweep resolves it, block lifts (dispatch now reaches sender/audience gates)
+    L.topicSubscribe = async () => {};
+    const r3 = rs(); await nl(mkA('POST', '/lw/api/nlweekly?site=fa&date=2026-10-25'), r3);
+    const j3 = JSON.parse(r3.body);
+    assert.notEqual(j3.error, 'optout-unresolved', 'block lifted after verified opt-out');
+    const rec2 = await FA.faStore.get(id);
+    assert.equal(rec2.nlUnsub.fa.provider, 'ok', 'verified provider opt-out recorded');
+  } finally {
+    L.topicSubscribe = orig;
+    content.fetchWeek = origFetchWeek;
+    SITES.fa.segmentId = origCfg.segmentId; SITES.fa.topicId = origCfg.topicId;
+    delete process.env.NL_TOPIC_ID_FA; delete process.env.NL_SEGMENT_ID_FA;
+    delete process.env.NL_DISPATCH_ENABLED; delete process.env.NL_CAS_VERIFIED; delete process.env.NL_REGISTRY_URL;
+  }
 });
