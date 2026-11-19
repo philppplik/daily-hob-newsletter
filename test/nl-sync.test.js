@@ -15,6 +15,8 @@ function mkL(over = {}) {
     ensureContact: async () => 'created',
     segmentJoin: async () => {},
     topicSubscribe: async () => {},
+    topicList: async () => ({ topics: [{ id: 'top1', subscription: 'opt_out' }] }),
+    contactGet: async () => ({ exists: true }),
     ...over
   };
 }
@@ -169,4 +171,105 @@ test('S10: CAS contention preserves concurrent fields (no clobber, bounded retry
   assert.ok(a.ok || b.ok, 'at least one wins immediately');
   assert.equal(saved.confirmedAt, '2026-10-24T12:00:00Z', 'field A preserved');
   assert.equal(saved.nlUnsub.fa.provider, 'ok', 'field B preserved');
+});
+
+test('U1: opt-out verified by topic GET -> ok, and no ensureContact on unsubscribe', async () => {
+  let ensured = 0;
+  const lm = mkL({
+    ensureContact: async () => { ensured++; },
+    topicSubscribe: async () => {},
+    topicList: async () => ({ topics: [{ id: 'top1', subscription: 'opt_out' }] })
+  });
+  const out = await sync.applyOptOut(lm, rec('u1@test.de'), 'fa');
+  assert.equal(out.status, 'ok');
+  assert.equal(ensured, 0, 'unsubscribe must not create provider state');
+});
+
+test('U2: accepted PATCH but topic not opt_out in read proof -> unknown, marker NOT resolved', async () => {
+  const lm = mkL({
+    topicSubscribe: async () => {},
+    topicList: async () => ({ topics: [{ id: 'top1', subscription: 'opt_in' }] })
+  });
+  const out = await sync.applyOptOut(lm, rec('u2@test.de'), 'fa');
+  assert.equal(out.status, 'unknown', 'acceptance without read proof is never success');
+});
+
+test('U3: PATCH 404 is not-present ONLY with direct contact-GET 404 (no blanket 404 success)', async () => {
+  const e = new Error('topic-subscribe 404'); e.code = 'contact-not-found';
+  const lm = mkL({ topicSubscribe: async () => { throw e; }, contactGet: async () => ({ notFound: true }) });
+  const out = await sync.applyOptOut(lm, rec('u3@test.de'), 'fa');
+  assert.equal(out.status, 'not-present');
+  const lm2 = mkL({ topicSubscribe: async () => { throw e; }, contactGet: async () => ({ exists: true }) });
+  const out2 = await sync.applyOptOut(lm2, rec('u3b@test.de'), 'fa');
+  assert.equal(out2.status, 'failed', 'topic 404 with existing contact stays failed');
+  const lm3 = mkL({ topicSubscribe: async () => { throw e; }, contactGet: async () => { throw new Error('contact-read 500'); } });
+  const out3 = await sync.applyOptOut(lm3, rec('u3c@test.de'), 'fa');
+  assert.equal(out3.status, 'failed', 'unreadable contact stays failed');
+});
+
+test('U4: provider 422 stays failed (regression: no blanket success on wrong payload)', async () => {
+  const lm = mkL({ topicSubscribe: async () => { throw new Error('topic-subscribe 422'); } });
+  const out = await sync.applyOptOut(lm, rec('u4@test.de'), 'fa');
+  assert.equal(out.status, 'failed');
+  assert.match(out.error, /422/);
+});
+
+test('U5: topicSubscribe sends documented bare-array body; ensure skipped only for opt-out', async () => {
+  const L2 = require('../api/_lw');
+  const prevMail = process.env.LW_MAIL; const prevKey = process.env.RESEND_API_KEY;
+  process.env.LW_MAIL = ''; process.env.RESEND_API_KEY = 'test-key';
+  const calls = [];
+  const origFetch = global.fetch;
+  global.fetch = async (url, opts) => { calls.push({ url: String(url), method: (opts && opts.method) || 'GET', body: opts && opts.body }); return { ok: true, status: 200, json: async () => ({}) }; };
+  try {
+    await L2.topicSubscribe('u5@test.de', 'top1', 'opt_out', { ensure: false });
+    assert.equal(calls.length, 1, 'no ensureContact fetch on opt-out');
+    assert.deepEqual(JSON.parse(calls[0].body), [{ id: 'top1', subscription: 'opt_out' }], 'bare array body');
+    calls.length = 0;
+    await L2.topicSubscribe('u5@test.de', 'top1', 'opt_in');
+    assert.equal(calls.length, 2, 'opt-in ensures contact first');
+    assert.deepEqual(JSON.parse(calls[1].body), [{ id: 'top1', subscription: 'opt_in' }]);
+  } finally {
+    global.fetch = origFetch; process.env.LW_MAIL = prevMail; process.env.RESEND_API_KEY = prevKey;
+  }
+});
+
+test('U6: topicList strict pagination (real helper, stubbed fetch)', async () => {
+  const L2 = require('../api/_lw');
+  const prevMail = process.env.LW_MAIL; const prevKey = process.env.RESEND_API_KEY;
+  process.env.LW_MAIL = ''; process.env.RESEND_API_KEY = 'test-key';
+  const origFetch = global.fetch;
+  const run = async (pages) => {
+    let i = 0;
+    global.fetch = async () => { const p = pages[Math.min(i++, pages.length - 1)]; return { ok: p.ok !== false, status: p.status || 200, json: async () => p.body }; };
+    return L2.topicList('u6@test.de');
+  };
+  try {
+    // two complete pages aggregate
+    const ok = await run([
+      { body: { data: [{ id: 'a', subscription: 'opt_out' }], has_more: true } },
+      { body: { data: [{ id: 'b', subscription: 'opt_in' }], has_more: false } }
+    ]);
+    assert.deepEqual(ok.topics, [{ id: 'a', subscription: 'opt_out' }, { id: 'b', subscription: 'opt_in' }]);
+    // has_more with empty page -> error, never partial success
+    await assert.rejects(() => run([{ body: { data: [], has_more: true } }]), /page-empty/);
+    // has_more without cursor -> error
+    await assert.rejects(() => run([{ body: { data: [{ id: null }], has_more: true } }]), /cursor-missing/);
+    // repeated cursor -> error
+    await assert.rejects(() => run([{ body: { data: [{ id: 'a', subscription: 'opt_out' }], has_more: true } }]), /cursor-repeat/);
+    // error on a FOLLOW page fails even with opt_out in the first fragment
+    await assert.rejects(() => run([
+      { body: { data: [{ id: 'a', subscription: 'opt_out' }], has_more: true } },
+      { status: 500, ok: false, body: {} }
+    ]), /topic-list 500/);
+    // 404 only accepted on the first page
+    const nf = await run([{ status: 404, ok: false, body: {} }]);
+    assert.deepEqual(nf, { notFound: true });
+    await assert.rejects(() => run([
+      { body: { data: [{ id: 'a', subscription: 'opt_out' }], has_more: true } },
+      { status: 404, ok: false, body: {} }
+    ]), /topic-list 404/);
+  } finally {
+    global.fetch = origFetch; process.env.LW_MAIL = prevMail; process.env.RESEND_API_KEY = prevKey;
+  }
 });
