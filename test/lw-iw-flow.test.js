@@ -82,3 +82,73 @@ test('IW dispatcher routes by action and rejects unknown', async () => {
   r = rs(); await disp({ method: 'GET', url: '/api/lw-iw/nope', headers: {}, query: { action: 'nope' } }, r);
   assert.equal(r.statusCode, 404);
 });
+
+test('IW weekly add-on: confirmed reader, site-bound token, own store only', async () => {
+  const em = 'iwaddon@test.de';
+  let r = rs(); await sub(mk('POST', '/lw/api/iwsub', { email: em, consent: true }), r); assert.equal(r.statusCode, 200);
+  let mail = L.sendMail.last;
+  const id = L.idOf(em);
+  let t = decodeURIComponent(mail.text.match(/t=([^\s&]+)/)[1]);
+  r = rs(); await conf(mk('GET', '/api/confirm?s=iw&t=' + encodeURIComponent(t)), r);
+  let rec = await IW.iwStore.get(id); assert.equal(rec.nlOptIn, false, 'IW legacy state');
+  // re-signup with weekly box: scoped IW weekly DOI from the IW sender
+  L.sendMail.last = null;
+  r = rs(); await sub(mk('POST', '/lw/api/iwsub', { email: em, consent: true, nl: true }), r); assert.equal(r.statusCode, 200);
+  mail = L.sendMail.last; assert.ok(mail && /Wochenrückblick von Intelligenz Welt/.test(mail.subject), 'IW-scoped weekly wording');
+  assert.equal(mail.from, IW.IW_FROM, 'IW sender on the add-on mail');
+  assert.ok(!/<img/i.test(mail.html), 'no tracking pixel');
+  t = decodeURIComponent(mail.text.match(/t=([^\s&]+)/)[1]);
+  // site binding: the IW add-on token must not apply on the KIFB path
+  r = rs(); await conf(mk('GET', '/api/confirm?t=' + encodeURIComponent(t)), r);
+  assert.match(r.headers.location, /\?e=1/, 'IW add-on token has no KIFB meaning');
+  rec = await IW.iwStore.get(id); assert.equal(rec.nlOptIn, false, 'no cross-site application');
+  // correct site path applies; KIFB store untouched
+  r = rs(); await conf(mk('GET', '/api/confirm?s=iw&t=' + encodeURIComponent(t)), r);
+  assert.match(r.headers.location, /intelligenz-welt\.de\/tagesbericht-bestaetigt\?nl=1/);
+  rec = await IW.iwStore.get(id);
+  assert.equal(rec.nlOptIn, true); assert.ok(rec.nlOptInConfirmedAt && rec.nlConfirmIp && rec.nlTextVersion);
+  assert.equal(await L.store.get(id), null, 'still no KIFB record for the IW-only reader');
+});
+
+test('IW weekly add-on confirm: replay keeps the first weekly proof', async () => {
+  const em = 'iwreplay@test.de';
+  const id = L.idOf(em);
+  // bestaetigter Tagesausgabe-Leser im Alt-Zustand (nlOptIn false)
+  await IW.iwStore.put(id, { email: em, source: 'iw', signupAt: new Date().toISOString(), signupIp: '203.0.113.9', textVersion: IW.IW_TEXT_VERSION, confirmedAt: new Date().toISOString(), confirmIp: '203.0.113.9', unsubscribedAt: null, nlOptIn: false });
+  const t = L.token('doi-nl-iw', id, 3600);
+  let r = rs(); await conf(mk('GET', '/api/confirm?s=iw&t=' + encodeURIComponent(t)), r);
+  assert.match(r.headers.location, /intelligenz-welt\.de\/tagesbericht-bestaetigt\?nl=1/);
+  const first = await IW.iwStore.get(id);
+  assert.equal(first.nlOptIn, true); assert.ok(first.nlOptInConfirmedAt && first.nlConfirmIp && first.nlTextVersion);
+  const proof = { nlAt: first.nlOptInConfirmedAt, nlIp: first.nlConfirmIp, nlTv: first.nlTextVersion, confirmedAt: first.confirmedAt, confirmIp: first.confirmIp };
+  // Replay desselben Links: Erfolgsseite, Erstnachweis byte-identisch
+  r = rs(); await conf(mk('GET', '/api/confirm?s=iw&t=' + encodeURIComponent(t)), r);
+  assert.match(r.headers.location, /\?nl=1/, 'replay lands on the success page');
+  const second = await IW.iwStore.get(id);
+  assert.equal(second.nlOptInConfirmedAt, proof.nlAt, 'Erstnachweis unveraendert bei Replay');
+  assert.equal(second.nlConfirmIp, proof.nlIp); assert.equal(second.nlTextVersion, proof.nlTv);
+  assert.equal(second.confirmedAt, proof.confirmedAt); assert.equal(second.confirmIp, proof.confirmIp, 'Tagesausgabe-Nachweis unangetastet');
+});
+
+test('IW weekly add-on confirm: Tagesausgabe unsubscribe between DOI and click is refused', async () => {
+  const em = 'iwunsub@test.de';
+  const id = L.idOf(em);
+  await IW.iwStore.put(id, { email: em, source: 'iw', signupAt: new Date().toISOString(), signupIp: '203.0.113.9', textVersion: IW.IW_TEXT_VERSION, confirmedAt: new Date().toISOString(), confirmIp: '203.0.113.9', unsubscribedAt: new Date().toISOString(), nlOptIn: false });
+  const t = L.token('doi-nl-iw', id, 3600);
+  const r = rs(); await conf(mk('GET', '/api/confirm?s=iw&t=' + encodeURIComponent(t)), r);
+  assert.match(r.headers.location, /\?e=1/, 'abgemeldeter Record wird abgelehnt');
+  const rec = await IW.iwStore.get(id);
+  assert.notEqual(rec.nlOptIn, true, 'kein nlOptIn auf abgemeldetem Record');
+  assert.ok(!rec.nlOptInConfirmedAt, 'kein Weekly-Nachweis gesetzt');
+});
+
+test('IW weekly add-on confirm: earlier weekly unsubscribe is no re-opt-in path', async () => {
+  const em = 'iwnlunsub@test.de';
+  const id = L.idOf(em);
+  await IW.iwStore.put(id, { email: em, source: 'iw', signupAt: new Date().toISOString(), signupIp: '203.0.113.9', textVersion: IW.IW_TEXT_VERSION, confirmedAt: new Date().toISOString(), confirmIp: '203.0.113.9', unsubscribedAt: null, nlOptIn: false, nlUnsub: { iw: new Date().toISOString() } });
+  const t = L.token('doi-nl-iw', id, 3600);
+  const r = rs(); await conf(mk('GET', '/api/confirm?s=iw&t=' + encodeURIComponent(t)), r);
+  assert.match(r.headers.location, /\?e=1/, 'nlUnsub.iw-Guard lehnt ab');
+  const rec = await IW.iwStore.get(id);
+  assert.notEqual(rec.nlOptIn, true, 'kein Re-Opt-in abgemeldeter Wochenleser');
+});
