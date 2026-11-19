@@ -78,3 +78,69 @@ test('atlas: expired tokens are rejected (dl and doi)', async () => {
   r = rs(); await conf2(mk('GET', '/api/confirm?s=atlas&t=' + encodeURIComponent(L.token('doi', id, -3600))), r);
   assert.match(r.headers.location, /atlas-daten-bestaetigt\?e=1/, 'expired doi token must fail closed');
 });
+
+test('weekly add-on: confirmed reader gets scoped weekly DOI; guards, throttle, replay-safe proof', async () => {
+  const em = 'addon@test.de';
+  // 1) Tagesbericht-only signup + confirm (legacy reader state: confirmed, nlOptIn false)
+  let r = rs(); await sub(mk('POST', '/api/subscribe', { email: em, consent: true }), r); assert.equal(r.statusCode, 200);
+  let mail = L.sendMail.last; assert.ok(!/Wochenrückblick/.test(mail.subject), 'no weekly wording in plain signup');
+  const id = L.idOf(em);
+  let t = decodeURIComponent(mail.text.match(/t=([^\s]+)/)[1]);
+  r = rs(); await conf(mk('GET', '/api/confirm?t=' + encodeURIComponent(t)), r);
+  let rec = await L.store.get(id);
+  assert.equal(rec.nlOptIn, false, 'legacy state: no weekly opt-in');
+  const proof = { confirmedAt: rec.confirmedAt, confirmIp: rec.confirmIp, signupAt: rec.signupAt, textVersion: rec.textVersion };
+  // 2) plain re-signup: silent no-op, no mail
+  L.sendMail.last = null;
+  r = rs(); await sub(mk('POST', '/api/subscribe', { email: em, consent: true }), r); assert.equal(r.statusCode, 200);
+  assert.equal(L.sendMail.last, null, 'plain re-signup stays a silent no-op');
+  // 3) re-signup with weekly box: scoped weekly DOI, record untouched before confirm
+  r = rs(); await sub(mk('POST', '/api/subscribe', { email: em, consent: true, nl: true }), r); assert.equal(r.statusCode, 200);
+  mail = L.sendMail.last; assert.ok(mail, 'weekly DOI sent');
+  assert.ok(/Wochenrückblick/.test(mail.subject) && !/Tagesbericht und/.test(mail.subject), 'weekly-scoped wording only');
+  assert.ok(!/<img/i.test(mail.html), 'no tracking pixel');
+  rec = await L.store.get(id);
+  assert.equal(rec.nlOptIn, false, 'no opt-in before confirm');
+  assert.ok(rec.nlWeeklyReqAt, 'throttle marker claimed atomically');
+  // 4) immediate repeat: throttled, no second mail
+  L.sendMail.last = null;
+  r = rs(); await sub(mk('POST', '/api/subscribe', { email: em, consent: true, nl: true }), r); assert.equal(r.statusCode, 200);
+  assert.equal(L.sendMail.last, null, 'throttled repeat sends nothing');
+  // 5) confirm add-on: only weekly fields, Tagesbericht proof untouched
+  t = decodeURIComponent(mail.text.match(/t=([^\s]+)/)[1]);
+  r = rs(); await conf(mk('GET', '/api/confirm?t=' + encodeURIComponent(t)), r);
+  assert.match(r.headers.location, /tagesbericht-bestaetigt\?nl=1/);
+  rec = await L.store.get(id);
+  assert.equal(rec.nlOptIn, true);
+  assert.ok(rec.nlOptInConfirmedAt && rec.nlConfirmIp && rec.nlTextVersion, 'own weekly consent proof');
+  assert.equal(rec.confirmedAt, proof.confirmedAt); assert.equal(rec.confirmIp, proof.confirmIp);
+  assert.equal(rec.signupAt, proof.signupAt); assert.equal(rec.textVersion, proof.textVersion);
+  assert.equal(rec.unsubscribedAt, null);
+  const firstNlProof = rec.nlOptInConfirmedAt;
+  // 6) replay of the same link: success page, first proof immutable
+  r = rs(); await conf(mk('GET', '/api/confirm?t=' + encodeURIComponent(t)), r);
+  assert.match(r.headers.location, /tagesbericht-bestaetigt\?nl=1/);
+  rec = await L.store.get(id);
+  assert.equal(rec.nlOptInConfirmedAt, firstNlProof, 'replay keeps the first proof');
+  // 7) further re-signup with weekly box: no-op, no mail
+  L.sendMail.last = null;
+  r = rs(); await sub(mk('POST', '/api/subscribe', { email: em, consent: true, nl: true }), r); assert.equal(r.statusCode, 200);
+  assert.equal(L.sendMail.last, null, 'already-opted-in re-signup stays silent');
+});
+
+test('weekly add-on guards: unconfirmed record and weekly-unsubscribed reader are refused', async () => {
+  // unconfirmed: doi-nl token for a fresh, unconfirmed record -> error page, no weekly fields
+  let r = rs(); await sub(mk('POST', '/api/subscribe', { email: 'addon2@test.de', consent: true }), r);
+  const id2 = L.idOf('addon2@test.de');
+  r = rs(); await conf(mk('GET', '/api/confirm?t=' + encodeURIComponent(L.token('doi-nl', id2, 100))), r);
+  assert.match(r.headers.location, /\?e=1/);
+  const rec2 = await L.store.get(id2); assert.ok(!rec2.nlOptIn, 'no weekly opt-in without Tagesbericht confirmation');
+  // weekly-unsubscribed (nlUnsub.kifb): no mail, confirm refused - no weekly re-opt-in path
+  const id3 = L.idOf('addon3@test.de');
+  await L.store.put(id3, { email: 'addon3@test.de', signupAt: new Date().toISOString(), signupIp: '203.0.113.9', textVersion: L.TEXT_VERSION, nlOptIn: false, confirmedAt: new Date().toISOString(), confirmIp: '203.0.113.9', unsubscribedAt: null, nlUnsub: { kifb: { at: new Date().toISOString() } } });
+  L.sendMail.last = null;
+  r = rs(); await sub(mk('POST', '/api/subscribe', { email: 'addon3@test.de', consent: true, nl: true }), r); assert.equal(r.statusCode, 200);
+  assert.equal(L.sendMail.last, null, 'no weekly re-opt-in mail after weekly unsubscribe');
+  r = rs(); await conf(mk('GET', '/api/confirm?t=' + encodeURIComponent(L.token('doi-nl', id3, 100))), r);
+  assert.match(r.headers.location, /\?e=1/, 'confirm refuses weekly-unsubscribed record');
+});
