@@ -11,24 +11,45 @@
 //   imgLabel visible caption under the image, e.g. 'KI-Illustration · Symbolbild'
 function applyCurated(week, curated, cfg) {
   const list = curated && Array.isArray(curated.items) ? curated.items : [];
-  const byOrig = new Map((week.items || []).map((it) => [it.orig, it]));
-  const pool = (week.items || []).slice();
-  const poolMore = (week.more || []).slice();
+  // Match against the FULL filtered week pool (ownOnly/allowPath/time window already
+  // applied by fetchWeek), not only the 3 primary picks. Feed duplicates collapse to
+  // the first (newest) occurrence; foreign/out-of-window URLs stay excluded.
+  const hasAll = Array.isArray(week._all) && week._all.length > 0;
+  const all = hasAll ? week._all : (week.items || []);
+  const key = (i) => i.orig || (typeof i.url === 'string' ? i.url.split('?')[0] : '');
+  const byOrig = new Map();
+  for (const i of all) { const k = key(i); if (k && !byOrig.has(k)) byOrig.set(k, i); }
+  const maxItems = cfg.maxItems || 3;
+  const maxMore = cfg.maxMore || 6;
   const items = [];
   const skipped = [];
+  const picked = new Set();
   for (const entry of list) {
     if (!entry || typeof entry.url !== 'string') { skipped.push('(invalid entry)'); continue; }
     const hit = byOrig.get(entry.url);
     if (!hit) { skipped.push(entry.url); continue; } // not in this week's feed: never send
-    const it = { ...hit };
+    if (picked.has(entry.url)) { skipped.push(entry.url); continue; } // duplicate lead: count once
+    if (items.length >= maxItems) { skipped.push(entry.url); continue; }
+    const it = week._map ? week._map(hit, items.length + 1) : { ...hit };
     if (entry.img === 'none' || entry.img === null) it.img = null;
     else if (typeof entry.img === 'string') it.img = entry.img.startsWith(cfg.site + '/') ? entry.img : null;
     if (it.img && typeof entry.imgLabel === 'string' && entry.imgLabel) it.imgLabel = entry.imgLabel;
     items.push(it);
-    pool.splice(pool.indexOf(hit), 1);
+    picked.add(key(hit));
   }
-  // Uncurated remainder keeps the week complete as plain links under "more".
-  const more = pool.concat(poolMore);
+  // Rest of the week from the FULL pool minus picked leads, unique by canonical URL,
+  // capped at maxMore only after dedupe (the "more" list stays a complete remainder).
+  // Without _all (legacy caller) the remainder falls back to the old items+more pool.
+  const restSrc = hasAll ? all : (week.items || []).concat(week.more || []);
+  const more = [];
+  const seen = new Set(picked);
+  for (const i of restSrc) {
+    const k = key(i);
+    if (!k || seen.has(k)) continue;
+    if (more.length >= maxMore) break;
+    seen.add(k);
+    more.push(week._mapMore ? week._mapMore(i, more.length + 1) : { title: i.title, url: i.url });
+  }
   return { ...week, items, more, curatedApplied: items.length, curatedSkipped: skipped };
 }
 module.exports = { applyCurated };
