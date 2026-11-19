@@ -114,7 +114,8 @@ async function fetchWeek(cfg, sendDate, fetchImpl) {
   const range = sameMonth ? longFmt.format(fromD).split(' ')[0] + '–' + longFmt.format(toD) : longFmt.format(fromD) + '–' + longFmt.format(toD);
   const weekLabel = 'KW ' + iso.week + ' · ' + range;
   const extra = cfg.extra ? { ...cfg.extra, url: utm(cfg, cfg.extra.url, campaign, 'extra') } : null;
-  return { items, more: moreM, weekLabel, campaign, total: week.length, extra };
+  const mapMore = (i, n) => ({ title: i.title, url: utm(cfg, i.url, campaign, 'mehr-' + n) });
+  return { items, more: moreM, weekLabel, campaign, total: week.length, extra, _all: week, _map: mapItem, _mapMore: mapMore };
 }
 
 function subjectFor(cfg, items, total, moreCount = 0) {
