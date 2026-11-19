@@ -470,3 +470,116 @@ test('probe cleanup: successful PUT with failing initial verification read is st
     delete process.env.NL_REGISTRY_URL;
   }
 });
+
+test('nl-weekly topicstate=1: read-only, early conflict validation, zero side effects', async () => {
+  const L = require('../api/_lw');
+  const FA = require('../api/_fa/falib');
+  const nl = require('../api/_nlh/weekly');
+  const content = require('../newsletter/content');
+  const dispatch = require('../newsletter/dispatch');
+  const rs = () => ({ headers: {}, setHeader(k, v) { this.headers[k.toLowerCase()] = v; }, end(b) { this.body = b; }, statusCode: 200 });
+  const email = 'topicstate@test.de';
+  await FA.faStore.put(L.idOf(email), { email, confirmedAt: '2026-10-24T10:00:00Z', nlOptIn: true, nlSync: { consentAt: '2026-10-24T10:00:00Z', state: 'unknown', error: 'topic-subscribe 422' } });
+  process.env.NL_TOPIC_ID_FA = 'topic_fa_weekly';
+  const origFetchWeek = content.fetchWeek;
+  content.fetchWeek = async () => ({ items: [{ title: 'A', url: 'https://x.test/a', teaser: 't', cat: null, img: null, dayLabel: 'Fr 24.10.' }, { title: 'B', url: 'https://x.test/b', teaser: 't', cat: null, img: null, dayLabel: 'Do 23.10.' }, { title: 'C', url: 'https://x.test/c', teaser: 't', cat: null, img: null, dayLabel: 'Mi 22.10.' }], more: [], weekLabel: 'KW 43', campaign: 'kw43-2026', total: 3, extra: null });
+  const counts = { contactGet: 0, topicList: 0, topicSubscribe: 0, probe: 0, sendMail: 0 };
+  const orig = { contactGet: L.contactGet, topicList: L.topicList, topicSubscribe: L.topicSubscribe, probe: dispatch.probeStorage, sendMail: L.sendMail };
+  L.contactGet = async () => { counts.contactGet++; return { exists: true }; };
+  L.topicList = async () => { counts.topicList++; return { topics: [{ id: 'topic_fa_weekly', subscription: 'opt_in' }] }; };
+  L.topicSubscribe = async () => { counts.topicSubscribe++; };
+  dispatch.probeStorage = async () => { counts.probe++; return { ok: true }; };
+  L.sendMail = async () => { counts.sendMail++; };
+  const auth = L.sign('nl:fa:2026-10-25');
+  const snap = async () => JSON.stringify((await FA.faStore.list()).map((x) => x.rec));
+  try {
+    const before = await snap();
+    const r = rs(); await nl({ method: 'GET', url: '/lw/api/nlweekly?site=fa&date=2026-10-25&dry=1&topicstate=1', headers: { 'x-lw-auth': auth } }, r);
+    const j = JSON.parse(r.body);
+    assert.equal(r.statusCode, 200);
+    assert.deepEqual(j.topicStates, [{ record: L.idOf(email), nlSyncState: 'unknown', topicConfigured: true, provider: 'opt_in' }]);
+    assert.equal(counts.contactGet, 1, 'one contact read per unresolved record');
+    assert.equal(counts.topicList, 1, 'one topic-list read per unresolved record');
+    assert.equal(counts.topicSubscribe, 0, 'no provider writes');
+    assert.equal(counts.probe, 0, 'no storage probe');
+    assert.equal(counts.sendMail, 0, 'no mail');
+    assert.equal(await snap(), before, 'every store record byte-identical');
+
+    // early conflict validation: rejected before ANY side-effect branch runs
+    for (const url of [
+      '/lw/api/nlweekly?site=fa&date=2026-10-25&topicstate=1',
+      '/lw/api/nlweekly?site=fa&date=2026-10-25&dry=1&topicstate=1&probe=1',
+      '/lw/api/nlweekly?site=fa&date=2026-10-25&dry=1&topicstate=1&to=a%40b.de'
+    ]) {
+      const r2 = rs(); await nl({ method: 'GET', url, headers: { 'x-lw-auth': auth } }, r2);
+      assert.equal(r2.statusCode, 400, url);
+      assert.equal(JSON.parse(r2.body).error, 'topicstate-conflict', url);
+    }
+    const r3 = rs(); await nl({ method: 'POST', url: '/lw/api/nlweekly?site=fa&date=2026-10-25&dry=1&topicstate=1', headers: { 'x-lw-auth': auth } }, r3);
+    assert.equal(r3.statusCode, 400, 'POST rejected');
+    assert.equal(counts.contactGet, 1, 'conflicts ran no provider reads');
+    assert.equal(counts.probe, 0, 'conflicts ran no storage probe');
+    assert.equal(counts.sendMail, 0, 'conflicts sent no mail');
+    assert.equal(counts.topicSubscribe, 0, 'conflicts wrote nothing');
+    assert.equal(await snap(), before, 'still byte-identical after conflicts');
+
+    // auth failure runs nothing at all
+    const r4 = rs(); await nl({ method: 'GET', url: '/lw/api/nlweekly?site=fa&date=2026-10-25&dry=1&topicstate=1', headers: { 'x-lw-auth': 'bad' } }, r4);
+    assert.equal(r4.statusCode, 401);
+    assert.equal(counts.contactGet, 1, 'no provider access without auth');
+  } finally {
+    L.contactGet = orig.contactGet; L.topicList = orig.topicList; L.topicSubscribe = orig.topicSubscribe;
+    dispatch.probeStorage = orig.probe; L.sendMail = orig.sendMail; content.fetchWeek = origFetchWeek;
+  }
+});
+
+test('nl-weekly topicstate=1: honest provider evidence (contact404 vs topic404, values, error codes)', async () => {
+  const L = require('../api/_lw');
+  const FA = require('../api/_fa/falib');
+  const nl = require('../api/_nlh/weekly');
+  const content = require('../newsletter/content');
+  const rs = () => ({ headers: {}, setHeader(k, v) { this.headers[k.toLowerCase()] = v; }, end(b) { this.body = b; }, statusCode: 200 });
+  const email = 'topicstate2@test.de';
+  await FA.faStore.put(L.idOf(email), { email, confirmedAt: '2026-10-24T10:00:00Z', nlOptIn: true, nlSync: { consentAt: '2026-10-24T10:00:00Z', state: 'attempting' } });
+  process.env.NL_TOPIC_ID_FA = 'topic_fa_weekly';
+  const origFetchWeek = content.fetchWeek;
+  content.fetchWeek = async () => ({ items: [{ title: 'A', url: 'https://x.test/a', teaser: 't', cat: null, img: null, dayLabel: 'Fr 24.10.' }, { title: 'B', url: 'https://x.test/b', teaser: 't', cat: null, img: null, dayLabel: 'Do 23.10.' }, { title: 'C', url: 'https://x.test/c', teaser: 't', cat: null, img: null, dayLabel: 'Mi 22.10.' }], more: [], weekLabel: 'KW 43', campaign: 'kw43-2026', total: 3, extra: null });
+  const orig = { contactGet: L.contactGet, topicList: L.topicList, topicSubscribe: L.topicSubscribe };
+  let subscribeCalls = 0; L.topicSubscribe = async () => { subscribeCalls++; };
+  const auth = L.sign('nl:fa:2026-10-25');
+  const run = async () => {
+    const r = rs(); await nl({ method: 'GET', url: '/lw/api/nlweekly?site=fa&date=2026-10-25&dry=1&topicstate=1', headers: { 'x-lw-auth': auth } }, r);
+    return JSON.parse(r.body).topicStates.find((e) => e.record === L.idOf(email));
+  };
+  const scenarios = [
+    ['contact-not-found', { contact: { notFound: true } }, { provider: 'contact-not-found' }],
+    ['topic-list-404-is-NOT-contact-not-found', { contact: { exists: true }, list: { notFound: true } }, { provider: 'topic-list-unavailable' }],
+    ['opt_out', { contact: { exists: true }, list: { topics: [{ id: 'topic_fa_weekly', subscription: 'opt_out' }] } }, { provider: 'opt_out' }],
+    ['topic-absent', { contact: { exists: true }, list: { topics: [{ id: 'other', subscription: 'opt_in' }] } }, { provider: 'topic-absent' }],
+    ['unknown-subscription-never-echoed', { contact: { exists: true }, list: { topics: [{ id: 'topic_fa_weekly', subscription: 'weird-value' }] } }, { provider: 'unknown-subscription' }],
+    ['topic-list-429-fixed-code', { contact: { exists: true }, listErr: new Error('topic-list 429') }, { provider: 'topic-list-unreadable', code: 'topic-list-429' }],
+    ['topic-list-pagination-fixed-code', { contact: { exists: true }, listErr: new Error('topic-list cursor-repeat') }, { provider: 'topic-list-unreadable', code: 'topic-list-cursor-repeat' }],
+    ['unclassified-error-collapsed', { contact: { exists: true }, listErr: new Error('socket hang up') }, { provider: 'topic-list-unreadable', code: 'topic-list-error' }],
+    ['contact-500-fixed-code', { contactErr: new Error('contact-read 500') }, { provider: 'contact-unreadable', code: 'contact-read-500' }]
+  ];
+  try {
+    for (const [name, stub, want] of scenarios) {
+      L.contactGet = async () => { if (stub.contactErr) throw stub.contactErr; return stub.contact || { exists: true }; };
+      L.topicList = async () => { if (stub.listErr) throw stub.listErr; return stub.list; };
+      const entry = await run();
+      assert.equal(entry.provider, want.provider, name);
+      if (want.code) assert.equal(entry.code, want.code, name + ' code');
+      else assert.equal(entry.code, undefined, name + ' no code');
+      assert.equal(entry.nlSyncState, 'attempting');
+      assert.equal(entry.topicConfigured, true);
+    }
+    delete process.env.NL_TOPIC_ID_FA;
+    const entry = await run();
+    assert.equal(entry.provider, 'unconfigured');
+    assert.equal(entry.topicConfigured, false);
+    assert.equal(subscribeCalls, 0, 'never a provider write');
+  } finally {
+    process.env.NL_TOPIC_ID_FA = 'topic_fa_weekly';
+    L.contactGet = orig.contactGet; L.topicList = orig.topicList; L.topicSubscribe = orig.topicSubscribe; content.fetchWeek = origFetchWeek;
+  }
+});
