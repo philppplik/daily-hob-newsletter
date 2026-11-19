@@ -50,6 +50,39 @@ function blobAuth() {
 }
 const REGISTRY_KEY = () => process.env.NL_REGISTRY_KEY || 'nl-registry/registry.json';
 const REGISTRY_URL = () => process.env.NL_REGISTRY_URL || ''; // canonical URL from the offline provisioning output
+// Canonical issue identity: ISO-8601 calendar week of the issue date. Real calendar
+// validation included ('2026-13-40' normalizes in Date and is rejected by the
+// roundtrip check). Returns 'YYYY-Www' or null for anything invalid.
+function isoWeek(dateStr) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return null;
+  const d = new Date(dateStr + 'T00:00:00Z');
+  if (isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== dateStr) return null;
+  const day = (d.getUTCDay() + 6) % 7;
+  d.setUTCDate(d.getUTCDate() - day + 3);
+  const first = new Date(Date.UTC(d.getUTCFullYear(), 0, 4));
+  const fd = (first.getUTCDay() + 6) % 7;
+  first.setUTCDate(first.getUTCDate() - fd + 3);
+  const week = 1 + Math.round((d - first) / (7 * 864e5));
+  return d.getUTCFullYear() + '-W' + String(week).padStart(2, '0');
+}
+// Real ISO-8601 week validation (2025 has NO W53): week 1..52(+1 only in long years).
+const ISO_WEEK_RE = /^(\d{4})-W(\d{2})$/;
+const hasWeek53 = (y) => { const j = new Date(Date.UTC(y, 0, 1)).getUTCDay(); const leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0; return j === 4 || (leap && j === 3); };
+const validIsoWeek = (s) => { const m = ISO_WEEK_RE.exec(typeof s === 'string' ? s : ''); return !!m && +m[2] >= 1 && +m[2] <= 52 + (hasWeek53(+m[1]) ? 1 : 0); };
+// Canonical issue keys: '<site>-<YYYY>-W<ww>' with an allowlisted site and a REAL ISO week.
+const ISSUE_KEY_RE = /^([a-z0-9]+)-(\d{4}-W\d{2})$/;
+// Disposable probe registry targets: nl-probe/<uuid>/registry.json ONLY.
+const PROBE_KEY_RE = /^nl-probe\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/registry\.json$/;
+const SITES_LIST = () => Object.keys(require('./config').SITES);
+const validIssueKey = (k) => { const m = ISSUE_KEY_RE.exec(typeof k === 'string' ? k : ''); return !!m && SITES_LIST().includes(m[1]) && validIsoWeek(m[2]); };
+// Strict timestamps: ISO shape AND real calendar date (no 2026-02-30 normalisation).
+const STRICT_TS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
+const validTs = (s) => {
+  if (typeof s !== 'string' || !STRICT_TS_RE.test(s)) return false;
+  const [y, mo, d] = s.slice(0, 10).split('-').map(Number);
+  const u = new Date(Date.UTC(y, mo - 1, d));
+  return u.getUTCFullYear() === y && u.getUTCMonth() === mo - 1 && u.getUTCDate() === d && !isNaN(new Date(s).getTime());
+};
 
 const blob = {
   // Plain PUT - ONLY for the offline provisioner and probe keys (unique/disposable),
@@ -122,29 +155,68 @@ async function provisionRegistry(deps) {
     if (!got) throw new Error('registry-listed-but-unreadable (fail closed)');
     return { created: false, url: hit.url, registry: got.value }; // exists: inspect only
   }
-  const init = { v: 1, initializedAt: new Date().toISOString(), issues: {} };
+  // Optional offline seed (deps.seedIssues / deps.seedMeta): pre-assigned issue states
+  // (sent tombstones / blocked-legacy from the reviewed recovery inventory), written at
+  // creation time only. NEVER used to overwrite an existing registry (inspect-only
+  // above). STRICT schema: canonical '<site>-<YYYY>-W<ww>' keys, allowed states only,
+  // evidence fields required per state; meta.minIssueWeek is mandatory with a seed and
+  // must be a valid ISO week. Anything else refuses BEFORE any write.
+  // explicit presence: only a plain object is a seed; null/false/0/''/array refuse
+  const hasSeed = deps && Object.prototype.hasOwnProperty.call(deps, 'seedIssues');
+  const seed = hasSeed ? deps.seedIssues : null;
+  const meta = (deps && deps.seedMeta) || null;
+  const STATES = { 'blocked-legacy': ['reason'], 'sent': ['broadcastId', 'sentAt'], 'needs_review': ['reason'], 'locked': ['owner'] };
+  if (meta != null && (typeof meta !== 'object' || Array.isArray(meta) || !validIsoWeek(meta.minIssueWeek) || Object.keys(meta).some((k) => k !== 'minIssueWeek'))) throw new Error('provision-seed-invalid: meta.minIssueWeek (real YYYY-Www) required');
+  if (hasSeed) {
+    if (!seed || typeof seed !== 'object' || Array.isArray(seed)) throw new Error('provision-seed-invalid');
+    if (!meta) throw new Error('provision-seed-invalid: meta.minIssueWeek (real YYYY-Www) required');
+    for (const [k, v] of Object.entries(seed)) {
+      if (!validIssueKey(k)) throw new Error('provision-seed-invalid: bad issue key');
+      if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error('provision-seed-invalid: bad state object');
+      if (!STATES[v.state]) throw new Error('provision-seed-invalid: bad state');
+      for (const f of STATES[v.state]) if (typeof v[f] !== 'string' || !v[f]) throw new Error('provision-seed-invalid: missing ' + f);
+      if (v.state === 'sent' && !validTs(v.sentAt)) throw new Error('provision-seed-invalid: bad sentAt');
+    }
+  }
+  const init = { v: 1, initializedAt: new Date().toISOString(), ...(meta && validIsoWeek(meta.minIssueWeek) ? { meta: { minIssueWeek: meta.minIssueWeek } } : {}), issues: seed ? { ...seed } : {} };
+  // FULL contract validation of the constructed init BEFORE any write: a schema
+  // violation means ZERO PUTs, never a persisted broken object. Meta-free
+  // creation is allowed ONLY for the internal storage probe, bound to an explicit
+  // probe flag AND a random disposable nl-probe/<uuid>/ target - never a regular
+  // nl-registry key, and the CLI can never select it. Every other provisioning
+  // requires the validated boundary meta (and seed when given) before ANY write.
+  const isProbe = deps && deps.probe === true && PROBE_KEY_RE.test(key);
+  if (!validateRegistry(init, { canonicalKeys: true, requireMeta: !isProbe })) throw new Error('provision-seed-invalid: production provisioning requires validated seed meta');
   const put = await b.put(key, init);
   // verify durable initialized state before anything may rely on it
   const back = await b.getWithEtag(put.url);
-  if (!back || !back.value || back.value.v !== 1 || !back.value.issues) throw new Error('provision-verify-failed');
+  if (!back || !validateRegistry(back.value, { canonicalKeys: true, requireMeta: !!init.meta })) throw new Error('provision-verify-failed');
+  if (seed && JSON.stringify(back.value.issues) !== JSON.stringify(init.issues)) throw new Error('provision-seed-verify-failed');
+  if (init.meta && (!back.value.meta || back.value.meta.minIssueWeek !== init.meta.minIssueWeek)) throw new Error('provision-seed-verify-failed');
   return { created: true, url: put.url, registry: back.value };
 }
 
 // Bounded read-merge-CAS on the registry. fn(issues) mutates the issues map in place
 // and may return false to abort. Retries on 412 with a fresh read (merge-preserving);
 // NEVER falls back to a plain write. deps: { blob, registryKey, registryUrl }.
+// Strict production validation (meta + canonical keys) is the DEFAULT at every
+// mutation read; dispatch additionally pins expectedMinIssueWeek. Only the
+// disposable probe namespace may substitute its own validator (deps.validator).
+const PROD_VALIDATION = { requireMeta: true, canonicalKeys: true };
 async function mutateRegistry(deps, fn, attempts = 4) {
   const b = deps.blob || blob;
   const key = deps.registryKey || REGISTRY_KEY();
   const url = deps.registryUrl || REGISTRY_URL();
   if (!url) return { ok: false, error: 'registry-missing' }; // no auto-create, ever
+  const validate = deps.validator || ((reg) => validateRegistry(reg, deps.validatorOpts || PROD_VALIDATION));
   for (let i = 0; i < attempts; i++) {
     const got = await b.getWithEtag(url);
     if (!got) return { ok: false, error: 'registry-missing' }; // fatal: never init online
-    const reg = got.value && typeof got.value === 'object' ? got.value : {};
-    reg.issues = reg.issues && typeof reg.issues === 'object' ? reg.issues : {};
+    if (!validate(got.value)) return { ok: false, error: 'registry-invalid' }; // fail closed, never repair silently
+    const reg = got.value;
     const out = await fn(reg.issues);
     if (out === false) return { ok: false, error: 'aborted', issues: reg.issues };
+    if (!validate(reg)) return { ok: false, error: 'registry-invalid' }; // never WRITE an invalid registry
     if (await b.putCas(key, reg, got.etag)) return { ok: true, issues: reg.issues, result: out };
   }
   return { ok: false, error: 'cas-contention' };
@@ -154,7 +226,7 @@ async function readRegistry(deps) {
   const url = deps.registryUrl || REGISTRY_URL();
   if (!url) return null;
   const got = await b.getWithEtag(url);
-  return got && got.value && got.value.issues ? got.value.issues : null;
+  return got && got.value && got.value.issues ? got.value : null;
 }
 
 // Live capability probe (scoped: DISPOSABLE nl-probe/ registry + keys, cleaned up,
@@ -184,7 +256,7 @@ async function probeStorage(deps) {
       }
       // P1 provision creates + verifies; P2 provision REFUSES to overwrite an existing
       // registry (the stale-404 overwrite path must not exist in code)
-      const p1 = await provisionRegistry({ blob: tracked, registryKey: regKey, registryUrl: '' });
+      const p1 = await provisionRegistry({ blob: tracked, registryKey: regKey, registryUrl: '', probe: true });
       if (!p1.created) return { ok: false, step: 'P1-provision-create-failed' };
       const p2 = await provisionRegistry({ blob: b, registryKey: regKey, registryUrl: p1.url });
       if (p2.created) return { ok: false, step: 'P2-provision-overwrote-existing' };
@@ -193,21 +265,23 @@ async function probeStorage(deps) {
       if (!g || g.value.v !== 1) return { ok: false, step: 'P3-read-after-write-failed' };
       // P4 CAS with current etag succeeds; P5 stale etag -> 412 (false)
       const reg = g.value;
-      reg.issues['probe-a'] = { state: 'claimed' };
+      reg.issues['probe-a'] = { state: 'claimed', claimant: 'probe' };
       if (!await b.putCas(regKey, reg, g.etag)) return { ok: false, step: 'P4-current-cas-failed' };
       if (await b.putCas(regKey, reg, g.etag) !== false) return { ok: false, step: 'P5-stale-cas-not-rejected' };
       // P6 parallel CAS on one etag -> exactly one winner
       const g6 = await b.getWithEtag(p1.url);
       const wins = await Promise.all(Array.from({ length: 6 }, (_, i) => {
         const r6 = JSON.parse(JSON.stringify(g6.value));
-        r6.issues['probe-r' + i] = { state: 'claimed' };
+        r6.issues['probe-r' + i] = { state: 'claimed', claimant: 'probe' };
         return b.putCas(regKey, r6, g6.etag).catch(() => 'err');
       }));
       if (wins.filter((w) => w === true).length !== 1) return { ok: false, step: 'P6-parallel-cas-not-exclusive', wins: wins.filter((w) => w === true).length };
       // P7 concurrent different-issue claims merge-preserve (both survive)
+      // probe CAS runs under the probe-namespace validator ONLY (production
+      // validation stays strict and would reject this disposable registry)
       const [m1, m2] = await Promise.all([
-        mutateRegistry({ blob: b, registryKey: regKey, registryUrl: p1.url }, (issues) => { issues['probe-m1'] = { state: 'claimed' }; }),
-        mutateRegistry({ blob: b, registryKey: regKey, registryUrl: p1.url }, (issues) => { issues['probe-m2'] = { state: 'claimed' }; })
+        mutateRegistry({ blob: b, registryKey: regKey, registryUrl: p1.url, validator: validateProbeRegistry }, (issues) => { issues['probe-m1'] = { state: 'claimed', claimant: 'probe' }; }),
+        mutateRegistry({ blob: b, registryKey: regKey, registryUrl: p1.url, validator: validateProbeRegistry }, (issues) => { issues['probe-m2'] = { state: 'claimed', claimant: 'probe' }; })
       ]);
       const g7 = await b.getWithEtag(p1.url);
       if (!m1.ok || !m2.ok || !g7.value.issues['probe-m1'] || !g7.value.issues['probe-m2']) return { ok: false, step: 'P7-merge-not-preserving', m1: m1.ok, m2: m2.ok };
@@ -232,6 +306,99 @@ async function probeStorage(deps) {
   }
   if (cleanupFailed) return { ok: false, step: result.ok ? 'cleanup-failed' : result.step, cleanup: 'failed', error: result.error };
   return result;
+}
+
+// Unified strict registry validation, used by dispatch AND every CAS read. No silent
+// normalisation anywhere: v must be 1, issues a plain object, every entry a plain
+// object with a known state and that state's required evidence fields. Options:
+// requireMeta (valid meta.minIssueWeek) and canonicalKeys (allowlisted site + real
+// ISO week per issue key).
+// Unified strict registry validation, applied by the dispatch read AND every CAS
+// read AND every CAS write (pre-PUT re-validation). No silent normalisation
+// anywhere. Contract:
+// - top level: plain object, keys only within {v, initializedAt, meta, issues};
+//   v === 1; initializedAt a strict real-calendar ISO timestamp; issues a plain object.
+// - meta (mandatory under requireMeta): plain object, EXACTLY { minIssueWeek: real
+//   ISO week } - unknown/extra meta keys or a wrong type fail. expectedMinIssueWeek
+//   PINS the boundary for a running dispatch: any change/raise/loss of the boundary
+//   between reads fails validation and locks that dispatch before claim/create/send.
+// - issue entries: plain objects, known state, per-state required evidence fields,
+//   whitelisted keys only, strict real-calendar timestamps, coherent provenance
+//   triple (claimant/name/createdAt: all three or none). Run states
+//   (claimed/draft/sending/failed-pre) REQUIRE provenance; the seed states the
+//   offline provisioner may write (blocked-legacy, locked, and provenance-free
+//   sent/needs_review tombstones) are never sufficient for a run takeover.
+const TS_KEYS = { createdAt: 1, updatedAt: 1, sentAt: 1, retriedAt: 1 };
+const OBJ_KEYS = { snapshot: 1, audienceSync: 1, detail: 1 };
+const PROV_KEYS = ['claimant', 'name', 'createdAt'];
+const STATE_FIELDS = {
+  claimed:          { req: ['claimant', 'name', 'createdAt'], opt: ['updatedAt', 'retriedAt', 'broadcastId'] },
+  draft:            { req: ['claimant', 'name', 'createdAt', 'broadcastId'], opt: ['updatedAt', 'retriedAt', 'snapshot', 'audienceSync'] },
+  sending:          { req: ['claimant', 'name', 'createdAt', 'broadcastId'], opt: ['updatedAt', 'retriedAt', 'snapshot', 'audienceSync'] },
+  sent:             { req: ['broadcastId', 'sentAt'], opt: ['claimant', 'name', 'createdAt', 'updatedAt', 'retriedAt', 'snapshot', 'audienceSync', 'reconciled'] },
+  'failed-pre':     { req: ['claimant', 'name', 'createdAt', 'reason'], opt: ['updatedAt', 'retriedAt', 'broadcastId', 'snapshot'] },
+  needs_review:     { req: ['reason'], opt: ['claimant', 'name', 'createdAt', 'updatedAt', 'retriedAt', 'broadcastId', 'snapshot', 'audienceSync', 'detail'] },
+  'blocked-legacy': { req: ['reason'], opt: ['detail'] },
+  locked:           { req: ['owner'], opt: ['reason', 'createdAt', 'detail'] }
+};
+function validateEntry(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  const spec = STATE_FIELDS[v.state];
+  if (!spec) return false;
+  const allowed = new Set(['state', ...spec.req, ...spec.opt]);
+  for (const k of Object.keys(v)) { if (v[k] === undefined) continue; if (!allowed.has(k)) return false; }
+  for (const f of spec.req) { if (typeof v[f] !== 'string' || !v[f]) return false; }
+  // coherent provenance: claimant/name/createdAt all-or-none
+  const prov = PROV_KEYS.filter((k) => v[k] !== undefined);
+  if (prov.length && prov.length !== PROV_KEYS.length) return false;
+  for (const k of Object.keys(v)) {
+    const val = v[k];
+    if (val === undefined || k === 'state') continue;
+    if (TS_KEYS[k]) { if (!validTs(val)) return false; }
+    else if (OBJ_KEYS[k]) { if (!val || typeof val !== 'object' || Array.isArray(val)) return false; }
+    else if (k === 'reconciled') { if (val !== true) return false; }
+    else if (typeof val !== 'string' || !val) return false;
+  }
+  return true;
+}
+function validateMeta(meta, opts) {
+  if (meta == null) return !(opts && opts.requireMeta);
+  if (typeof meta !== 'object' || Array.isArray(meta)) return false;
+  const ks = Object.keys(meta);
+  if (ks.length !== 1 || ks[0] !== 'minIssueWeek' || !validIsoWeek(meta.minIssueWeek)) return false;
+  if (opts && opts.expectedMinIssueWeek && meta.minIssueWeek !== opts.expectedMinIssueWeek) return false;
+  return true;
+}
+function validateRegistry(reg, opts) {
+  if (!reg || typeof reg !== 'object' || Array.isArray(reg)) return false;
+  for (const k of Object.keys(reg)) if (!['v', 'initializedAt', 'meta', 'issues'].includes(k)) return false;
+  if (reg.v !== 1) return false;
+  if (!validTs(reg.initializedAt)) return false;
+  if (!reg.issues || typeof reg.issues !== 'object' || Array.isArray(reg.issues)) return false;
+  if (!validateMeta(reg.meta, opts)) return false;
+  for (const [k, v] of Object.entries(reg.issues)) {
+    if (opts && opts.canonicalKeys && !validIssueKey(k)) return false;
+    if (!validateEntry(v)) return false;
+  }
+  return true;
+}
+// Probe-namespace validation: the ONLY validator the disposable nl-probe registry
+// may use. Probe entries live exclusively under 'probe-*' keys in one fixed shape;
+// the production validator never accepts them (canonical keys) and the probe
+// validator never accepts production entries or field-grown probes - production
+// validation is NEVER loosened to rescue a probe.
+function validateProbeRegistry(reg) {
+  if (!reg || typeof reg !== 'object' || Array.isArray(reg)) return false;
+  for (const k of Object.keys(reg)) if (!['v', 'initializedAt', 'meta', 'issues'].includes(k)) return false;
+  if (reg.v !== 1 || !validTs(reg.initializedAt)) return false;
+  if (!reg.issues || typeof reg.issues !== 'object' || Array.isArray(reg.issues)) return false;
+  for (const [k, v] of Object.entries(reg.issues)) {
+    if (!/^probe-[a-z0-9-]+$/.test(k)) return false;
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+    const ks = Object.keys(v).sort();
+    if (ks.join(',') !== 'claimant,state' || v.state !== 'claimed' || v.claimant !== 'probe') return false;
+  }
+  return true;
 }
 
 // --- broadcast helpers (resend() from newsletter/core; injectable for tests) ---
@@ -306,20 +473,42 @@ async function dispatch(cfg, model, html, deps) {
   deps = deps || {};
   if (!deps.segmentIdValue || !deps.topicIdValue) return { ok: false, error: 'audience-unresolved', note: 'segmentId and topicId are both required for every broadcast' };
   const uuid = deps.uuid || crypto.randomUUID;
-  const name = cfg.product + ' ' + model.weekLabel; // deterministic per issue
-  const issueId = cfg.key + '-' + model.date;
+  const name = cfg.product + ' ' + model.weekLabel; // display only - identity is the ISO week below
+  // Canonical atomic issue identity: site + ISO calendar week of the issue date.
+  // weekLabel/date strings never alter identity; two dates of one week share ONE
+  // claim. Invalid calendar dates refuse BEFORE any registry/provider access.
+  const wk = isoWeek(model.date);
+  if (!wk) return { ok: false, error: 'blocked-legacy', reason: 'invalid-issue-date' };
+  const issueId = cfg.key + '-' + wk;
   const me = uuid();
   const now = () => new Date().toISOString();
 
-  const issues0 = await readRegistry(deps);
-  if (!issues0) return { ok: false, error: 'registry-missing', note: 'offline provisioning required (scripts/nl-registry-provision.js); no auto-create' };
+  const reg0 = await readRegistry(deps);
+  if (!reg0) return { ok: false, error: 'registry-missing', note: 'offline provisioning required (scripts/nl-registry-provision.js); no auto-create' };
+  const issues0 = reg0.issues;
+  // The WHOLE loaded registry must satisfy the unified strict schema (v, plain issues
+  // object, canonical allowlisted keys, per-state evidence fields) BEFORE anything is
+  // claimed or any provider is touched. Damaged registries fail closed, never repair.
+  if (!validateRegistry(reg0, { canonicalKeys: true })) return { ok: false, error: 'registry-invalid' };
+  // Durable lower bound, FAIL CLOSED: the seeded registry must carry a valid
+  // meta.minIssueWeek; missing/invalid meta blocks every issue (no env fallback).
+  // Issue weeks before the bound are never claimable - including days of an
+  // unreviewed legacy week after a mid-week cutoff, and unenumerated old keys.
+  const minWeek = reg0.meta && validIsoWeek(reg0.meta.minIssueWeek) ? reg0.meta.minIssueWeek : null;
+  if (!minWeek) return { ok: false, error: 'blocked-legacy', reason: 'min-issue-week-missing' };
+  if (wk < minWeek) return { ok: false, error: 'blocked-legacy', reason: 'before-min-issue-week', minIssueWeek: minWeek };
+  // Every mutation read below re-validates the WHOLE registry against the FULL
+  // production contract with the boundary PINNED to the value read here: a
+  // changed/raised/lost minIssueWeek (or any other schema break) BETWEEN reads
+  // fails validation and locks THIS dispatch before any claim/create/send.
+  const mdeps = { ...deps, validatorOpts: { requireMeta: true, canonicalKeys: true, expectedMinIssueWeek: minWeek } };
 
   // 1) claim via bounded read-merge-CAS. Different issues merge-preserve; the same
   //    issue has exactly one winner. No adoption of foreign claims, ever.
   let rec = null;
   const cur = issues0[issueId];
   if (!cur) {
-    const m = await mutateRegistry(deps, (issues) => {
+    const m = await mutateRegistry(mdeps, (issues) => {
       const c = issues[issueId];
       if (c) { rec = c; return false; } // someone claimed between read and write
       issues[issueId] = { claimant: me, state: 'claimed', name, createdAt: now() };
@@ -327,18 +516,22 @@ async function dispatch(cfg, model, html, deps) {
     if (!m.ok) {
       if (m.error === 'aborted' && rec) return stateOutcome(issueId, rec, deps);
       if (m.error === 'registry-missing') return { ok: false, error: 'registry-missing' };
+      if (m.error === 'registry-invalid') return { ok: false, error: 'registry-invalid' };
       return { ok: false, error: 'locked', note: m.error };
     }
     rec = m.issues[issueId];
   } else {
     if (cur.state === 'sent') return { ok: false, error: 'already-sent', broadcastId: cur.broadcastId, sentAt: cur.sentAt };
-    if (cur.state === 'sending' || cur.state === 'needs_review') return reconcile(issueId, cur, deps);
+    if (cur.state === 'blocked-legacy') return { ok: false, error: 'blocked-legacy', reason: cur.reason || 'seeded' };
+    if (cur.state === 'sending' || cur.state === 'needs_review') return reconcile(issueId, cur, mdeps);
     if (cur.state === 'failed-pre') {
-      // the one take-overable state: exactly one retrier wins this CAS
-      const m = await mutateRegistry(deps, (issues) => {
+      // the one take-overable state: exactly one retrier wins this CAS. A fresh,
+      // schema-clean claimed entry is written (provenance kept, run binding kept,
+      // terminal reason dropped) - never a field-accumulating spread.
+      const m = await mutateRegistry(mdeps, (issues) => {
         const c = issues[issueId];
         if (!c || c.state !== 'failed-pre') { rec = c || null; return false; }
-        issues[issueId] = { ...c, claimant: me, state: 'claimed', retriedAt: now(), updatedAt: now() };
+        issues[issueId] = { claimant: me, state: 'claimed', name: c.name, createdAt: c.createdAt, retriedAt: now(), updatedAt: now(), ...(c.broadcastId ? { broadcastId: c.broadcastId } : {}) };
       });
       if (!m.ok) return rec ? stateOutcome(issueId, rec, deps) : { ok: false, error: 'locked', note: m.error };
       rec = m.issues[issueId];
@@ -354,7 +547,7 @@ async function dispatch(cfg, model, html, deps) {
   // Owner-only transitions: bounded read-merge-CAS that verifies ownership on every
   // write and only ever patches this one issue (other issues merge-preserve).
   const transition = async (patch) => {
-    const m = await mutateRegistry(deps, (issues) => {
+    const m = await mutateRegistry(mdeps, (issues) => {
       const c = issues[issueId];
       if (!c || c.claimant !== me) { rec = c || null; return false; }
       issues[issueId] = { ...c, ...patch, updatedAt: now() };
@@ -363,22 +556,37 @@ async function dispatch(cfg, model, html, deps) {
     rec = m.issues[issueId];
     return rec;
   };
-  const block = async (reason, extra) => { await transition({ state: 'needs_review', reason, ...(extra || {}) }); return { ok: false, error: 'needs_review', reason }; };
+  const block = async (reason, extra) => { await transition({ state: 'needs_review', reason, ...(extra ? { detail: extra } : {}) }); return { ok: false, error: 'needs_review', reason }; };
 
   // 2) ensure exactly one provider draft for this issue (drafts cannot send)
   if (rec.state === 'claimed') {
-    const existing = await listDraftsByName(name, deps).catch((e) => { if (e.code === 'broadcast-list-paginated') return null; throw e; });
-    if (existing === null) return block('broadcast-list-paginated');
+    // Full read-only inventory first: a sent/scheduled/queued broadcast with this
+    // issue's name ALWAYS hard-blocks (needs_review), never just drafts.
+    const inv = await listBroadcastInventory(deps).catch(() => null);
+    if (!inv || !inv.complete) return block('broadcast-list-unreadable');
+    const nonDraft = inv.broadcasts.filter((x) => x.name === name && x.status !== 'draft');
+    if (nonDraft.length) return block('broadcast-exists-non-draft', { broadcasts: nonDraft.map((x) => ({ id: x.id, status: x.status })) });
+    const drafts = inv.broadcasts.filter((x) => x.name === name && x.status === 'draft');
     let id = null;
-    if (existing.length === 1) id = existing[0].id;
-    else if (existing.length > 1) return block('duplicate-drafts', { drafts: existing.map((x) => x.id) });
-    else id = await createDraft(cfg, model, html, name, deps).catch(async (e) => {
-      if (e.code === 'audience-unresolved') throw e;
-      // draft-create failed BEFORE anything can send: mark retryable, not terminal
-      await transition({ state: 'failed-pre', reason: 'draft-create: ' + (e && e.message || e) });
-      return null;
-    });
-    if (!id) return { ok: false, error: 'failed-pre', reason: 'draft-create' };
+    if (rec.broadcastId) {
+      // retry with an existing registry binding: ONLY the bound draft may continue,
+      // and it must pass the FULL content check at step 3 before any send.
+      const bound = drafts.find((x) => x.id === rec.broadcastId);
+      if (!bound) return block('bound-draft-missing', { broadcastId: rec.broadcastId });
+      if (drafts.length > 1) return block('duplicate-drafts', { drafts: drafts.map((x) => x.id) });
+      id = rec.broadcastId;
+    } else {
+      // Fresh claim: ANY pre-existing draft with this issue's name is foreign and
+      // stays blocked (needs_review). Ownership binds strictly via broadcastId.
+      if (drafts.length) return block('draft-exists-unowned', { drafts: drafts.map((x) => x.id) });
+      id = await createDraft(cfg, model, html, name, deps).catch(async (e) => {
+        if (e.code === 'audience-unresolved') throw e;
+        // draft-create failed BEFORE anything can send: mark retryable, not terminal
+        await transition({ state: 'failed-pre', reason: 'draft-create: ' + (e && e.message || e) });
+        return null;
+      });
+      if (!id) return { ok: false, error: 'failed-pre', reason: 'draft-create' };
+    }
     if (!await transition({ state: 'draft', broadcastId: id, snapshot: deps.eligibleSnapshot })) return { ok: false, error: 'locked' };
   }
 
@@ -391,9 +599,19 @@ async function dispatch(cfg, model, html, deps) {
     if (!sync.ok) return block('audience-sync-unresolved', { failed: sync.failed || [] });
   }
 
-  // 3) pre-send provider verification (never send on stale assumptions)
+  // 3) pre-send provider verification, FULL binding (never send on stale or foreign
+  // content): status draft + name + subject + html + from + reply_to + segment_id +
+  // topic_id must ALL match this exact issue render and audience.
   const bcState = await getBroadcast(rec.broadcastId, deps);
-  if (!bcState || bcState.status !== 'draft' || bcState.name !== name) return block('broadcast-not-draft', { provider: bcState && { status: bcState.status, name: bcState.name } });
+  const normReply = (v) => (Array.isArray(v) ? v.slice() : (v ? [v] : []));
+  const wantReply = normReply(cfg.replyTo);
+  const gotReply = bcState ? normReply(bcState.reply_to) : null;
+  const replyMatch = !!gotReply && gotReply.length === wantReply.length && gotReply.every((x, i) => x === wantReply[i]);
+  const contentBound = bcState && bcState.status === 'draft' && bcState.name === name &&
+    bcState.subject === model.subject && bcState.html === html && bcState.from === cfg.from &&
+    replyMatch &&
+    bcState.segment_id === deps.segmentIdValue && bcState.topic_id === deps.topicIdValue;
+  if (!contentBound) return block('broadcast-not-draft', { provider: bcState && { status: bcState.status, name: bcState.name } });
 
   // 4) atomic transition into 'sending' BEFORE the one and only send call
   if (!await transition({ state: 'sending' })) return { ok: false, error: 'locked' };
@@ -439,4 +657,4 @@ function dispatchEnabled() {
   return process.env.NL_DISPATCH_ENABLED === '1' && process.env.NL_CAS_VERIFIED === '1';
 }
 
-module.exports = { dispatch, probeStorage, dispatchEnabled, provisionRegistry, mutateRegistry, listBroadcastInventory, blob };
+module.exports = { dispatch, probeStorage, dispatchEnabled, provisionRegistry, mutateRegistry, readRegistry, listBroadcastInventory, isoWeek, validateRegistry, validateProbeRegistry, blob };
