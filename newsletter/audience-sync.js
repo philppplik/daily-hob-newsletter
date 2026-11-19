@@ -22,17 +22,32 @@
 //   the fresh-consent path (confirm / eligible dispatch records); anything not
 //   provably safe blocks.
 
-// opt-out is idempotent-safe to retry; 'ok' means the provider ACCEPTED the request
-// (there is no documented GET for topic state, so acceptance is all that can be shown).
+// opt-out is idempotent-safe to retry, but acceptance alone is NOT proof: after an accepted
+// PATCH the target topic is verified via GET /contacts/{email}/topics (paginated read).
+// 'ok' only with the target topic reading opt_out; otherwise 'unknown' (fail-closed).
+// A PATCH 404 becomes 'not-present' ONLY with a read proof that the contact is absent -
+// never a blanket 404-success. The unsubscribe path must not create provider state
+// (no ensureContact, no segment join, no global resubscribe).
 async function applyOptOut(L, rec, site) {
   const topicId = L.weeklyTopic(site);
   if (!topicId) return { status: 'unconfigured' };
   try {
-    await L.topicSubscribe(rec.email, topicId, 'opt_out');
-    return { status: 'ok' };
+    await L.topicSubscribe(rec.email, topicId, 'opt_out', { ensure: false });
   } catch (e) {
+    if (e && e.code === 'contact-not-found') {
+      // topic-PATCH 404 proves nothing about the CONTACT: only a confirmed 404 of the
+      // direct contact GET counts as absence; contact present or any read error stays failed.
+      const probe = await L.contactGet(rec.email).catch((e2) => ({ error: String(e2 && e2.message || e2) }));
+      if (probe && probe.notFound) return { status: 'not-present' };
+      return { status: 'failed', error: 'topic-subscribe 404; contact ' + (probe && probe.exists ? 'exists' : 'unreadable: ' + ((probe && probe.error) || '?')) };
+    }
     return { status: 'failed', error: String(e && e.message || e) };
   }
+  const list = await L.topicList(rec.email).catch((e) => ({ error: String(e && e.message || e) }));
+  if (!list || list.error) return { status: 'unknown', error: 'accepted-unverified: ' + ((list && list.error) || 'unreadable') };
+  const hit = (list.topics || []).find((t) => t && t.id === topicId);
+  if (hit && hit.subscription === 'opt_out') return { status: 'ok' };
+  return { status: 'unknown', error: 'accepted-unverified: topic not opt_out' };
 }
 
 async function applyConsent(deps, rec) {
