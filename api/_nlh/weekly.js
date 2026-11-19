@@ -18,6 +18,14 @@ const STORES = {
 };
 const logStore = L.storeFor('nl-log/');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Fixed, non-leaking error codes for read-only topicstate reporting. _lw provider
+// errors are already sanitized ('topic-list 403', 'contact-read 500', 'topic-list
+// page-empty'); anything else collapses to '<prefix>-error'. Raw messages never leave.
+const KNOWN_ERR = ['topic-list', 'contact-read', 'topic-subscribe'];
+const codeOf = (e, prefix) => {
+  const m = /^([a-z-]+) ([a-z0-9-]+)$/i.exec(String((e && e.message) || ''));
+  return m && KNOWN_ERR.includes(m[1]) ? m[1] + '-' + m[2] : prefix + '-error';
+};
 
 module.exports = async (req, res) => {
   const q = new URL(req.url, 'http://x').searchParams;
@@ -26,6 +34,13 @@ module.exports = async (req, res) => {
   const date = /^\d{4}-\d{2}-\d{2}$/.test(q.get('date') || '') ? q.get('date') : new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Berlin' });
   const got = req.headers['x-lw-auth'];
   if (!L.adminOk(got, 'nl:' + cfg.key + ':' + date)) return L.json(res, 401, { ok: false });
+
+  // topicstate=1 is a STRICTLY read-only inspection mode. Validate the parameter
+  // combination up front, before ANY side-effect branch (storage probe, log read for
+  // test sends, real test send) can run: GET + dry=1 only, no probe, no to.
+  if (q.get('topicstate') === '1' && (req.method !== 'GET' || q.get('dry') !== '1' || q.get('probe') === '1' || q.get('to'))) {
+    return L.json(res, 400, { ok: false, error: 'topicstate-conflict' });
+  }
 
   const to = L.norm(q.get('to') || '');
   // No force parameter anywhere (review v2): 'already-sent' and 'needs_review' are
@@ -81,7 +96,38 @@ module.exports = async (req, res) => {
       recordCount = el.recordCount; eligibleCount = el.recipients.length;
       masked = el.recipients.slice(0, 10).map((r) => r.email.replace(/^(.).*(@.*)$/, '$1***$2'));
     }
-    return L.json(res, 200, { ok: true, dry: true, site: cfg.key, date, subject, sender: cfg.from, window: week.weekLabel, items: week.items.length, more: week.more.length, feedTotal: week.total, curated: curatedState, curatedSkipped, recordCount, eligible: to ? 1 : eligibleCount, masked, alreadySent: !!(old && old.sentAt) });
+    // topicstate=1: READ-ONLY provider topic verification for records with an unresolved
+    // nlSync marker (unknown/attempting). Writes nothing anywhere (enforced by the early
+    // conflict validation above). Evidence discipline: ONLY a direct contact GET 404
+    // proves contact absence; a topic-list 404 is reported as topic-list-unavailable.
+    // Output is data-minimal: record hash (no address), no raw provider errors, unknown
+    // subscription values are never echoed as evidence.
+    let topicStates = null;
+    if (q.get('topicstate') === '1') {
+      topicStates = [];
+      const topicId = L.weeklyTopic(cfg.key);
+      const all = await STORES[cfg.key]().list();
+      for (const { rec } of all) {
+        if (!rec || !rec.email || !rec.nlSync) continue;
+        if (rec.nlSync.state !== 'unknown' && rec.nlSync.state !== 'attempting') continue;
+        const entry = { record: L.idOf(rec.email), nlSyncState: rec.nlSync.state, topicConfigured: !!topicId };
+        if (!topicId) { entry.provider = 'unconfigured'; topicStates.push(entry); continue; }
+        let contact;
+        try { contact = await L.contactGet(rec.email); }
+        catch (e) { entry.provider = 'contact-unreadable'; entry.code = codeOf(e, 'contact-read'); topicStates.push(entry); continue; }
+        if (contact && contact.notFound) { entry.provider = 'contact-not-found'; topicStates.push(entry); continue; }
+        let list;
+        try { list = await L.topicList(rec.email); }
+        catch (e) { entry.provider = 'topic-list-unreadable'; entry.code = codeOf(e, 'topic-list'); topicStates.push(entry); continue; }
+        if (!list || list.notFound) { entry.provider = 'topic-list-unavailable'; topicStates.push(entry); continue; }
+        const hit = (list.topics || []).find((t) => t && t.id === topicId);
+        if (!hit) entry.provider = 'topic-absent';
+        else if (hit.subscription === 'opt_in' || hit.subscription === 'opt_out') entry.provider = hit.subscription;
+        else entry.provider = 'unknown-subscription';
+        topicStates.push(entry);
+      }
+    }
+    return L.json(res, 200, { ok: true, dry: true, site: cfg.key, date, subject, sender: cfg.from, window: week.weekLabel, items: week.items.length, more: week.more.length, feedTotal: week.total, curated: curatedState, curatedSkipped, recordCount, eligible: to ? 1 : eligibleCount, masked, topicStates, alreadySent: !!(old && old.sentAt) });
   }
 
   if (to) {
