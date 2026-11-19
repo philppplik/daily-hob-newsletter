@@ -36,7 +36,28 @@ module.exports = async (req, res) => {
   const old = to ? await logStore.get(logKey) : null;
   if (old && old.sentAt && req.method === 'POST') return L.json(res, 200, { ok: false, error: 'already-sent', log: old });
 
-  const week = await content.fetchWeek(cfg, date);
+  // Curated editorial selection (freigegebener Wochenversand): a reviewed
+  // nl-curated/<site>-<date>.json at a stable blob URL selects/orders/re-images ONLY
+  // this week's feed URLs - it can never inject foreign links, secrets or recipients.
+  const { applyCurated } = require('../../newsletter/curated');
+  const curatedUrl = process.env['NL_CURATED_URL_' + cfg.key.toUpperCase()] || '';
+  let curatedState = curatedUrl ? 'missing' : 'off';
+  let curatedSkipped = [];
+  let week = await content.fetchWeek(cfg, date);
+  if (curatedUrl) {
+    try {
+      const cr = await fetch(curatedUrl + (curatedUrl.includes('?') ? '&' : '?') + 'cache=0', { cache: 'no-store' });
+      if (cr.ok) {
+        week = applyCurated(week, await cr.json(), cfg);
+        curatedState = 'applied';
+        curatedSkipped = week.curatedSkipped;
+      }
+    } catch (e) { curatedState = 'unreadable'; }
+  }
+  // Fail closed: with NL_REQUIRE_CURATED=1 no broadcast leaves without the reviewed selection.
+  if (req.method === 'POST' && q.get('dry') !== '1' && !to && process.env.NL_REQUIRE_CURATED === '1' && curatedState !== 'applied') {
+    return L.json(res, 409, { ok: false, error: 'needs-curation', site: cfg.key, date, curated: curatedState });
+  }
   if (week.items.length < 3) return L.json(res, 200, { ok: false, error: 'thin-content', items: week.items.length });
   if (req.method === 'POST' && q.get('dry') !== '1' && !cfg.from) return L.json(res, 503, { ok: false, error: 'sender-unresolved', site: cfg.key });
   const subject = content.subjectFor(cfg, week.items, week.total, week.more.length);
@@ -62,7 +83,7 @@ module.exports = async (req, res) => {
       recordCount = el.recordCount; eligibleCount = el.recipients.length;
       masked = el.recipients.slice(0, 10).map((r) => r.email.replace(/^(.).*(@.*)$/, '$1***$2'));
     }
-    return L.json(res, 200, { ok: true, dry: true, site: cfg.key, date, subject, sender: cfg.from, window: week.weekLabel, items: week.items.length, more: week.more.length, feedTotal: week.total, recordCount, eligible: to ? 1 : eligibleCount, masked, alreadySent: !!(old && old.sentAt) });
+    return L.json(res, 200, { ok: true, dry: true, site: cfg.key, date, subject, sender: cfg.from, window: week.weekLabel, items: week.items.length, more: week.more.length, feedTotal: week.total, curated: curatedState, curatedSkipped, recordCount, eligible: to ? 1 : eligibleCount, masked, alreadySent: !!(old && old.sentAt) });
   }
 
   if (to) {
