@@ -28,7 +28,22 @@ const { provisionRegistry, blob } = require('../newsletter/dispatch');
     console.error('NL_REGISTRY_URL is set but unreadable. Resolve manually; refusing to create over an ambiguous state.');
     process.exitCode = 1; return;
   }
-  const out = await provisionRegistry({});
+  // Optional reviewed seed: node scripts/nl-registry-provision.js --init --seed <file.json>
+  // File shape: { "issues": { "<site>-<YYYY>-W<ww>": { state, ... } }, "meta": { "minIssueWeek": "YYYY-Www" } }.
+  // Strictly validated in provisionRegistry; a seed is written ONLY at creation time.
+  const seedIdx = process.argv.indexOf('--seed');
+  if (seedIdx === -1) { console.error('--init requires --seed <file.json>: the reviewed recovery seed ({ issues, meta.minIssueWeek }) is mandatory; meta-free creation is reserved for the internal storage probe.'); process.exitCode = 1; return; }
+  let deps = {};
+  if (seedIdx !== -1) {
+    const file = process.argv[seedIdx + 1];
+    if (!file) { console.error('--seed needs a JSON file path.'); process.exitCode = 1; return; }
+    const fs = require('fs');
+    let parsed; try { parsed = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { console.error('seed file unreadable/invalid JSON:', e && e.message || e); process.exitCode = 1; return; }
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.issues !== 'object' || typeof parsed.meta !== 'object') { console.error('seed file must be { issues: {...}, meta: { minIssueWeek } }'); process.exitCode = 1; return; }
+    deps = { seedIssues: parsed.issues, seedMeta: parsed.meta };
+    console.log('seed file loaded:', Object.keys(parsed.issues).length, 'issue entries, minIssueWeek', parsed.meta.minIssueWeek);
+  }
+  const out = await provisionRegistry(deps);
   if (!out.created) { console.log('registry already existed - inspect only, nothing written.'); return; }
   console.log('registry created and verified.');
   console.log('Set these env vars (Preview AND Production only when approved):');
