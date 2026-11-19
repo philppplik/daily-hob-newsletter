@@ -240,16 +240,58 @@ async function ensureContact(email) {
   return 'created';
 }
 // PATCH /contacts/{email}/topics (update-contact-topics): subscription 'opt_in' | 'opt_out'.
-// Contact is ensured first, so the PATCH never 404s on a new subscriber (R1).
-async function topicSubscribe(email, topicId, subscription) {
+// The documented body is a BARE ARRAY of {id, subscription} (SDK: patch(url, payload.topics)) -
+// an object {topics:[...]} is rejected with 422 (live-observed 2026-11-19, blocked opt-in AND opt-out).
+// opt_in ensures the contact first (R1); opt_out passes { ensure: false } and must never create
+// contact/global subscription state during an unsubscribe.
+async function topicSubscribe(email, topicId, subscription, opts) {
   if (process.env.LW_MAIL === 'dry') { (topicSubscribe.calls = topicSubscribe.calls || []).push({ email, topicId, subscription }); return; }
-  await ensureContact(email);
+  if (!opts || opts.ensure !== false) await ensureContact(email);
   const r = await fetch('https://api.resend.com/contacts/' + encodeURIComponent(email) + '/topics', {
     method: 'PATCH',
     headers: { authorization: 'Bearer ' + process.env.RESEND_API_KEY, 'content-type': 'application/json' },
-    body: JSON.stringify({ topics: [{ id: topicId, subscription }] })
+    body: JSON.stringify([{ id: topicId, subscription }])
   });
+  if (r.status === 404) { const e = new Error('topic-subscribe 404'); e.code = 'contact-not-found'; throw e; }
   if (!r.ok) throw new Error('topic-subscribe ' + r.status);
+}
+// GET /contacts/{email} (retrieve-contact): direct read proof for contact existence.
+// 404 => { notFound: true }; anything else non-ok throws (sanitized status only).
+async function contactGet(email) {
+  if (process.env.LW_MAIL === 'dry') return { exists: true };
+  const h = { authorization: 'Bearer ' + process.env.RESEND_API_KEY, 'content-type': 'application/json' };
+  const r = await fetch('https://api.resend.com/contacts/' + encodeURIComponent(email), { headers: h });
+  if (r.status === 404) return { notFound: true };
+  if (!r.ok) throw new Error('contact-read ' + r.status);
+  return { exists: true };
+}
+// GET /contacts/{email}/topics (get-contact-topics): read proof for topic state. STRICT
+// pagination: an error/empty page/missing or repeated cursor never yields a partial
+// success; only the FIRST page may 404 ({ notFound: true }); bounded to 10 pages.
+async function topicList(email) {
+  if (process.env.LW_MAIL === 'dry') {
+    const seen = {};
+    for (const c of (topicSubscribe.calls || [])) if (c && c.email === email && c.topicId) seen[c.topicId] = c.subscription;
+    return { topics: Object.keys(seen).map((id) => ({ id, subscription: seen[id] })) };
+  }
+  const h = { authorization: 'Bearer ' + process.env.RESEND_API_KEY, 'content-type': 'application/json' };
+  const out = []; let after = null;
+  for (let page = 0; page < 10; page++) {
+    const u = 'https://api.resend.com/contacts/' + encodeURIComponent(email) + '/topics?limit=100' + (after ? '&after=' + encodeURIComponent(after) : '');
+    const r = await fetch(u, { headers: h });
+    if (r.status === 404 && page === 0) return { notFound: true };
+    if (!r.ok) throw new Error('topic-list ' + r.status);
+    const j = await r.json();
+    const data = (j && j.data) || [];
+    for (const t of data) out.push({ id: t && t.id, subscription: t && t.subscription });
+    if (!j || !j.has_more) return { topics: out };
+    if (!data.length) throw new Error('topic-list page-empty');
+    const next = data[data.length - 1] && data[data.length - 1].id;
+    if (!next) throw new Error('topic-list cursor-missing');
+    if (next === after) throw new Error('topic-list cursor-repeat');
+    after = next;
+  }
+  throw new Error('topic-list pages-exceeded');
 }
 // Explicit join into an EXISTING segment by id (R2): never creates segments, never
 // touches unsubscribed. Gated everywhere on the pending-approval env ids.
@@ -279,4 +321,4 @@ async function addToSegment(email, name) {
   let r = await fetch('https://api.resend.com/contacts', { method: 'POST', headers: h, body: JSON.stringify({ email, unsubscribed: false, segments: [{ id }] }) });
   if (!r.ok) await fetch('https://api.resend.com/contacts/' + encodeURIComponent(email) + '/segments/' + id, { method: 'POST', headers: h });
 }
-module.exports = { storeFor, apiUrl, weeklyTopic, weeklySegmentId, topicSubscribe, segmentJoin, ensureContact, SITE_IW, SITE_FA, segmentId, ATLAS_TEXT_VERSION, ATLAS_VERSION, atlasPath, fetchAtlas, TK_TEXT_VERSION, TK_VERSION, toolkitPath, fetchToolkit, sign, adminOk, reportPath, fetchReport, latestReport, addToSegment, TEXT_VERSION, SITE, API, idOf, norm, validEmail, token, verify, store, sendMail, cors, json, redirect, ip, readBody };
+module.exports = { storeFor, apiUrl, weeklyTopic, weeklySegmentId, topicSubscribe, topicList, contactGet, segmentJoin, ensureContact, SITE_IW, SITE_FA, segmentId, ATLAS_TEXT_VERSION, ATLAS_VERSION, atlasPath, fetchAtlas, TK_TEXT_VERSION, TK_VERSION, toolkitPath, fetchToolkit, sign, adminOk, reportPath, fetchReport, latestReport, addToSegment, TEXT_VERSION, SITE, API, idOf, norm, validEmail, token, verify, store, sendMail, cors, json, redirect, ip, readBody };
