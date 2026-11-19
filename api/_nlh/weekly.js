@@ -21,7 +21,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Fixed, non-leaking error codes for read-only topicstate reporting. _lw provider
 // errors are already sanitized ('topic-list 403', 'contact-read 500', 'topic-list
 // page-empty'); anything else collapses to '<prefix>-error'. Raw messages never leave.
-const KNOWN_ERR = ['topic-list', 'contact-read', 'topic-subscribe'];
+const KNOWN_ERR = ['topic-list', 'contact-read', 'topic-subscribe', 'broadcast-list'];
 const codeOf = (e, prefix) => {
   const m = /^([a-z-]+) ([a-z0-9-]+)$/i.exec(String((e && e.message) || ''));
   return m && KNOWN_ERR.includes(m[1]) ? m[1] + '-' + m[2] : prefix + '-error';
@@ -38,7 +38,7 @@ module.exports = async (req, res) => {
   // topicstate=1 is a STRICTLY read-only inspection mode. Validate the parameter
   // combination up front, before ANY side-effect branch (storage probe, log read for
   // test sends, real test send) can run: GET + dry=1 only, no probe, no to.
-  if (q.get('topicstate') === '1' && (req.method !== 'GET' || q.get('dry') !== '1' || q.get('probe') === '1' || q.get('to'))) {
+  if ((q.get('topicstate') === '1' || q.get('broadcaststate') === '1') && (req.method !== 'GET' || q.get('dry') !== '1' || q.get('probe') === '1' || q.get('to'))) {
     return L.json(res, 400, { ok: false, error: 'topicstate-conflict' });
   }
 
@@ -127,7 +127,17 @@ module.exports = async (req, res) => {
         topicStates.push(entry);
       }
     }
-    return L.json(res, 200, { ok: true, dry: true, site: cfg.key, date, subject, sender: cfg.from, window: week.weekLabel, items: week.items.length, more: week.more.length, feedTotal: week.total, curated: curatedState, curatedSkipped, recordCount, eligible: to ? 1 : eligibleCount, masked, topicStates, alreadySent: !!(old && old.sentAt) });
+    // broadcaststate=1: READ-ONLY complete provider broadcast inventory (recovery
+    // review). Strict fail-closed pagination inside dispatch.listBroadcastInventory;
+    // minimal non-PII fields; matchesSite marks this site's issue-name prefix.
+    let broadcastStates = null;
+    if (q.get('broadcaststate') === '1') {
+      try {
+        const inv = await dispatch.listBroadcastInventory({});
+        broadcastStates = { ok: true, complete: inv.complete, pages: inv.pages, total: inv.broadcasts.length, broadcasts: inv.broadcasts.map((b) => ({ ...b, matchesSite: typeof b.name === 'string' && b.name.startsWith(cfg.product + ' ') })) };
+      } catch (e) { broadcastStates = { ok: false, code: codeOf(e, 'broadcast-list') }; }
+    }
+    return L.json(res, 200, { ok: true, dry: true, site: cfg.key, date, subject, sender: cfg.from, window: week.weekLabel, items: week.items.length, more: week.more.length, feedTotal: week.total, curated: curatedState, curatedSkipped, recordCount, eligible: to ? 1 : eligibleCount, masked, topicStates, broadcastStates, alreadySent: !!(old && old.sentAt) });
   }
 
   if (to) {
