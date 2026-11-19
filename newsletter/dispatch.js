@@ -244,6 +244,41 @@ async function listDraftsByName(name, deps) {
   const rows = j.data || j.broadcasts || [];
   return rows.filter((x) => x && x.name === name && x.status === 'draft');
 }
+// READ-ONLY complete broadcast inventory (recovery review). STRICT pagination AND
+// strict response validation, fail closed: every page must be a valid object with
+// data:Array and has_more:Boolean, every record needs a unique non-empty string id
+// and type-correct fields; any malformed page/record discards the WHOLE result.
+// Completion is explicit ({ complete, pages, broadcasts }) - never infer success
+// from a top-level ok. Bounded to 10 pages; duplicates/cycles across ALL pages are
+// hard errors, never a partial list. Minimal non-PII fields only.
+async function listBroadcastInventory(deps) {
+  const out = []; const seen = Object.create(null); let after = null;
+  const strOrNull = (v) => v === null || v === undefined || typeof v === 'string';
+  for (let page = 0; page < 10; page++) {
+    const u = '/broadcasts?limit=100' + (after ? '&after=' + encodeURIComponent(after) : '');
+    let r;
+    try { r = await bc(deps)(u); } catch (e) { throw new Error('broadcast-list transport'); }
+    if (!r.ok) throw new Error('broadcast-list ' + r.status);
+    const j = r.json;
+    if (!j || typeof j !== 'object' || Array.isArray(j)) throw new Error('broadcast-list schema');
+    if (typeof j.has_more !== 'boolean') throw new Error('broadcast-list schema');
+    if (!Array.isArray(j.data)) throw new Error('broadcast-list schema');
+    for (const b of j.data) {
+      if (!b || typeof b !== 'object' || typeof b.id !== 'string' || !b.id) throw new Error('broadcast-list record-schema');
+      if (seen[b.id]) throw new Error('broadcast-list duplicate-id');
+      seen[b.id] = true;
+      if (!(b.name === null || typeof b.name === 'string') || typeof b.status !== 'string' ||
+          !strOrNull(b.created_at) || !strOrNull(b.scheduled_at) || !strOrNull(b.sent_at)) throw new Error('broadcast-list record-schema');
+      out.push({ id: b.id, name: b.name == null ? null : b.name, status: b.status, created_at: b.created_at == null ? null : b.created_at, scheduled_at: b.scheduled_at == null ? null : b.scheduled_at, sent_at: b.sent_at == null ? null : b.sent_at });
+    }
+    if (!j.has_more) return { complete: true, pages: page + 1, broadcasts: out };
+    if (!j.data.length) throw new Error('broadcast-list page-empty');
+    const next = j.data[j.data.length - 1].id;
+    if (next === after) throw new Error('broadcast-list cursor-repeat');
+    after = next;
+  }
+  throw new Error('broadcast-list pages-exceeded');
+}
 async function getBroadcast(id, deps) {
   const r = await bc(deps)('/broadcasts/' + id);
   if (!r.ok) return null;
@@ -404,4 +439,4 @@ function dispatchEnabled() {
   return process.env.NL_DISPATCH_ENABLED === '1' && process.env.NL_CAS_VERIFIED === '1';
 }
 
-module.exports = { dispatch, probeStorage, dispatchEnabled, provisionRegistry, mutateRegistry, blob };
+module.exports = { dispatch, probeStorage, dispatchEnabled, provisionRegistry, mutateRegistry, listBroadcastInventory, blob };
