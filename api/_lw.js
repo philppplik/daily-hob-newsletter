@@ -26,6 +26,20 @@ const b64 = (b) => Buffer.from(b).toString('base64url');
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const key = () => { const k = process.env.LW_SECRET; if (!k || k.length < 24) throw new Error('LW_SECRET missing'); return k; };
 const sign = (msg) => crypto.createHmac('sha256', key()).update(msg).digest('base64url');
+// Admin auth (x-lw-auth on ops endpoints like nlweekly): accepts an HMAC under
+// LW_SECRET and, additionally, under NL_ADMIN_KEY when set (>=24 chars). Additive on
+// purpose: user-facing tokens (doi/dl/unsub) stay signed by LW_SECRET alone, so a
+// lost operator key never forces a rotation that would break live links. A too-short
+// NL_ADMIN_KEY is ignored, never an error path that weakens the check.
+const adminOk = (gotHeader, msg) => {
+  const got = Buffer.from(String(gotHeader || ''));
+  const keys = [process.env.LW_SECRET, process.env.NL_ADMIN_KEY].filter((k) => k && k.length >= 24);
+  if (!keys.length) throw new Error('admin key missing');
+  return keys.some((k) => {
+    const want = Buffer.from(crypto.createHmac('sha256', k).update(msg).digest('base64url'));
+    return got.length === want.length && crypto.timingSafeEqual(got, want);
+  });
+};
 const norm = (e) => String(e || '').trim().toLowerCase();
 const validEmail = (e) => e.length <= 254 && /^[^\s@<>"']+@[^\s@<>"']+\.[^\s@<>"']{2,}$/.test(e);
 const idOf = (email) => sha(norm(email)).slice(0, 40);
@@ -265,4 +279,4 @@ async function addToSegment(email, name) {
   let r = await fetch('https://api.resend.com/contacts', { method: 'POST', headers: h, body: JSON.stringify({ email, unsubscribed: false, segments: [{ id }] }) });
   if (!r.ok) await fetch('https://api.resend.com/contacts/' + encodeURIComponent(email) + '/segments/' + id, { method: 'POST', headers: h });
 }
-module.exports = { storeFor, apiUrl, weeklyTopic, weeklySegmentId, topicSubscribe, segmentJoin, ensureContact, SITE_IW, SITE_FA, segmentId, ATLAS_TEXT_VERSION, ATLAS_VERSION, atlasPath, fetchAtlas, TK_TEXT_VERSION, TK_VERSION, toolkitPath, fetchToolkit, sign, reportPath, fetchReport, latestReport, addToSegment, TEXT_VERSION, SITE, API, idOf, norm, validEmail, token, verify, store, sendMail, cors, json, redirect, ip, readBody };
+module.exports = { storeFor, apiUrl, weeklyTopic, weeklySegmentId, topicSubscribe, segmentJoin, ensureContact, SITE_IW, SITE_FA, segmentId, ATLAS_TEXT_VERSION, ATLAS_VERSION, atlasPath, fetchAtlas, TK_TEXT_VERSION, TK_VERSION, toolkitPath, fetchToolkit, sign, adminOk, reportPath, fetchReport, latestReport, addToSegment, TEXT_VERSION, SITE, API, idOf, norm, validEmail, token, verify, store, sendMail, cors, json, redirect, ip, readBody };
