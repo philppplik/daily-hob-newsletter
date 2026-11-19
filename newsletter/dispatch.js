@@ -80,6 +80,11 @@ const blob = {
   async del(url) {
     await fetch(API + '/delete', { method: 'POST', headers: { ...blobAuth(), 'content-type': 'application/json' }, body: JSON.stringify({ urls: [url] }) }).catch(() => {});
   },
+  // Raw HTTP status for a canonical URL. Cleanup verification only: a confirmed 404
+  // proves absence; any other status/transport failure (403/500/0) proves NOTHING.
+  async status(url) {
+    try { const r = await fetch(url + (url.includes('?') ? '&' : '?') + 'cache=0', { headers: blobAuth() }); return r.status; } catch (e) { return 0; }
+  },
   // Prefix listing for the OFFLINE provisioner only; FAIL CLOSED on any list error
   // or pagination (never reason over a partial/absence-unproven list).
   async list(prefix) {
@@ -97,7 +102,9 @@ const blob = {
 async function provisionRegistry(deps) {
   const b = (deps && deps.blob) || blob;
   const key = (deps && deps.registryKey) || REGISTRY_KEY();
-  const url = (deps && deps.registryUrl) || REGISTRY_URL();
+  // Explicit vs missing: an explicitly passed registryUrl ('' = provision fresh at
+  // registryKey, used by the storage probe) must NOT fall back to the production env URL.
+  const url = deps && Object.prototype.hasOwnProperty.call(deps, 'registryUrl') ? deps.registryUrl : REGISTRY_URL();
   if (url) {
     const got = await b.getWithEtag(url);
     if (got) return { created: false, url, registry: got.value }; // exists: inspect only, never PUT
@@ -158,47 +165,73 @@ async function probeStorage(deps) {
   const pfx = 'nl-probe/' + crypto.randomUUID() + '/';
   const regKey = pfx + 'registry.json';
   const urls = [];
+  // Track every canonical URL the moment a PUT succeeds, so cleanup knows created
+  // probe objects even when a later verification step throws before returning.
+  const tracked = Object.create(b);
+  tracked.put = async (k, v) => { const r = await b.put(k, v); if (r && r.url) urls.push(r.url); return r; };
+  // Inner checks may return early on any failure; cleanup+verification ALWAYS runs
+  // afterwards for every created probe URL, and a cleanup failure is always visible
+  // without masking the original finding.
+  let result;
   try {
-    // P1 provision creates + verifies; P2 provision REFUSES to overwrite an existing
-    // registry (the stale-404 overwrite path must not exist in code)
-    const p1 = await provisionRegistry({ blob: b, registryKey: regKey, registryUrl: '' });
-    urls.push(p1.url);
-    if (!p1.created) return { ok: false, step: 'P1-provision-create-failed' };
-    const p2 = await provisionRegistry({ blob: b, registryKey: regKey, registryUrl: p1.url });
-    if (p2.created) return { ok: false, step: 'P2-provision-overwrote-existing' };
-    // P3 read-after-write + ETag presence on the canonical URL
-    const g = await b.getWithEtag(p1.url);
-    if (!g || g.value.v !== 1) return { ok: false, step: 'P3-read-after-write-failed' };
-    // P4 CAS with current etag succeeds; P5 stale etag -> 412 (false)
-    const reg = g.value;
-    reg.issues['probe-a'] = { state: 'claimed' };
-    if (!await b.putCas(regKey, reg, g.etag)) return { ok: false, step: 'P4-current-cas-failed' };
-    if (await b.putCas(regKey, reg, g.etag) !== false) return { ok: false, step: 'P5-stale-cas-not-rejected' };
-    // P6 parallel CAS on one etag -> exactly one winner
-    const g6 = await b.getWithEtag(p1.url);
-    const wins = await Promise.all(Array.from({ length: 6 }, (_, i) => {
-      const r6 = JSON.parse(JSON.stringify(g6.value));
-      r6.issues['probe-r' + i] = { state: 'claimed' };
-      return b.putCas(regKey, r6, g6.etag).catch(() => 'err');
-    }));
-    if (wins.filter((w) => w === true).length !== 1) return { ok: false, step: 'P6-parallel-cas-not-exclusive', wins: wins.filter((w) => w === true).length };
-    // P7 concurrent different-issue claims merge-preserve (both survive)
-    const [m1, m2] = await Promise.all([
-      mutateRegistry({ blob: b, registryKey: regKey, registryUrl: p1.url }, (issues) => { issues['probe-m1'] = { state: 'claimed' }; }),
-      mutateRegistry({ blob: b, registryKey: regKey, registryUrl: p1.url }, (issues) => { issues['probe-m2'] = { state: 'claimed' }; })
-    ]);
-    const g7 = await b.getWithEtag(p1.url);
-    if (!m1.ok || !m2.ok || !g7.value.issues['probe-m1'] || !g7.value.issues['probe-m2']) return { ok: false, step: 'P7-merge-not-preserving', m1: m1.ok, m2: m2.ok };
-    // P8 delete -> 404 on read (probe cleanup path itself)
-    const k = await b.put(pfx + 'tmp.json', { t: 1 }); urls.push(k.url);
-    await b.del(k.url);
-    if (await b.getWithEtag(k.url) !== null) return { ok: false, step: 'P8-delete-not-effective' };
-    return { ok: true };
+    result = await (async () => {
+      // P0 read-only attestation of the ACTUAL configured registry (never written):
+      // proves the configured URL + adapter credentials before any disposable-path test.
+      const cfgUrl = REGISTRY_URL();
+      if (cfgUrl) {
+        const got0 = await b.getWithEtag(cfgUrl);
+        if (!got0 || !got0.value || !got0.value.issues) return { ok: false, step: 'P0-configured-registry-unreadable' };
+      }
+      // P1 provision creates + verifies; P2 provision REFUSES to overwrite an existing
+      // registry (the stale-404 overwrite path must not exist in code)
+      const p1 = await provisionRegistry({ blob: tracked, registryKey: regKey, registryUrl: '' });
+      if (!p1.created) return { ok: false, step: 'P1-provision-create-failed' };
+      const p2 = await provisionRegistry({ blob: b, registryKey: regKey, registryUrl: p1.url });
+      if (p2.created) return { ok: false, step: 'P2-provision-overwrote-existing' };
+      // P3 read-after-write + ETag presence on the canonical URL
+      const g = await b.getWithEtag(p1.url);
+      if (!g || g.value.v !== 1) return { ok: false, step: 'P3-read-after-write-failed' };
+      // P4 CAS with current etag succeeds; P5 stale etag -> 412 (false)
+      const reg = g.value;
+      reg.issues['probe-a'] = { state: 'claimed' };
+      if (!await b.putCas(regKey, reg, g.etag)) return { ok: false, step: 'P4-current-cas-failed' };
+      if (await b.putCas(regKey, reg, g.etag) !== false) return { ok: false, step: 'P5-stale-cas-not-rejected' };
+      // P6 parallel CAS on one etag -> exactly one winner
+      const g6 = await b.getWithEtag(p1.url);
+      const wins = await Promise.all(Array.from({ length: 6 }, (_, i) => {
+        const r6 = JSON.parse(JSON.stringify(g6.value));
+        r6.issues['probe-r' + i] = { state: 'claimed' };
+        return b.putCas(regKey, r6, g6.etag).catch(() => 'err');
+      }));
+      if (wins.filter((w) => w === true).length !== 1) return { ok: false, step: 'P6-parallel-cas-not-exclusive', wins: wins.filter((w) => w === true).length };
+      // P7 concurrent different-issue claims merge-preserve (both survive)
+      const [m1, m2] = await Promise.all([
+        mutateRegistry({ blob: b, registryKey: regKey, registryUrl: p1.url }, (issues) => { issues['probe-m1'] = { state: 'claimed' }; }),
+        mutateRegistry({ blob: b, registryKey: regKey, registryUrl: p1.url }, (issues) => { issues['probe-m2'] = { state: 'claimed' }; })
+      ]);
+      const g7 = await b.getWithEtag(p1.url);
+      if (!m1.ok || !m2.ok || !g7.value.issues['probe-m1'] || !g7.value.issues['probe-m2']) return { ok: false, step: 'P7-merge-not-preserving', m1: m1.ok, m2: m2.ok };
+      // P8 delete -> 404 on read (probe cleanup path itself)
+      const k = await tracked.put(pfx + 'tmp.json', { t: 1 });
+      await b.del(k.url);
+      if (await b.status(k.url) !== 404) return { ok: false, step: 'P8-delete-not-effective' };
+      return { ok: true };
+    })();
   } catch (e) {
-    return { ok: false, step: 'exception', error: String(e && e.message || e) };
-  } finally {
-    for (const u of urls) await b.del(u);
+    result = { ok: false, step: 'exception', error: String(e && e.message || e) };
   }
+  // Cleanup verification: the blob del adapter swallows errors, so confirm absence
+  // after every delete. Unconfirmed cleanup fails closed and never masks the
+  // original finding (original step/error kept, cleanup flagged).
+  let cleanupFailed = false;
+  for (const u of urls) {
+    try {
+      await b.del(u);
+      if (await b.status(u) !== 404) cleanupFailed = true; // only a confirmed 404 proves absence
+    } catch (e) { cleanupFailed = true; }
+  }
+  if (cleanupFailed) return { ok: false, step: result.ok ? 'cleanup-failed' : result.step, cleanup: 'failed', error: result.error };
+  return result;
 }
 
 // --- broadcast helpers (resend() from newsletter/core; injectable for tests) ---
