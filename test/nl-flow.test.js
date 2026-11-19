@@ -298,3 +298,29 @@ test('unresolved provider opt-out: nl-unsub is never false-success, bulk dispatc
     delete process.env.NL_DISPATCH_ENABLED; delete process.env.NL_CAS_VERIFIED; delete process.env.NL_REGISTRY_URL;
   }
 });
+
+test('nl-weekly admin auth: additive NL_ADMIN_KEY, LW_SECRET kept, short key ignored', async () => {
+  const nl = require('../api/_nlh/weekly');
+  const realFetch = content.fetchWeek;
+  content.fetchWeek = async (cfg, date) => realFetch(cfg, date, fakeFeed);
+  const rs = () => ({ headers: {}, setHeader(k, v) { this.headers[k.toLowerCase()] = v; }, end(b) { this.body = b; } });
+  const mkA = (auth) => ({ method: 'GET', url: '/lw/api/nlweekly?site=kifb&date=2026-10-25&dry=1', headers: { 'x-lw-auth': auth } });
+  const crypto2 = require('crypto');
+  const signWith = (k, msg) => crypto2.createHmac('sha256', k).update(msg).digest('base64url');
+  const msg = 'nl:kifb:2026-10-25';
+  // without NL_ADMIN_KEY: LW_SECRET HMAC accepted, foreign key rejected
+  delete process.env.NL_ADMIN_KEY;
+  let r = rs(); await nl(mkA(L.sign(msg)), r); assert.equal(JSON.parse(r.body).ok, true, 'LW_SECRET auth keeps working');
+  r = rs(); await nl(mkA(signWith('z'.repeat(40), msg)), r); assert.equal(r.statusCode, 401, 'foreign key rejected');
+  // with NL_ADMIN_KEY: both accepted (additive, no rotation of LW_SECRET)
+  process.env.NL_ADMIN_KEY = 'y'.repeat(48);
+  r = rs(); await nl(mkA(L.sign(msg)), r); assert.equal(JSON.parse(r.body).ok, true, 'LW_SECRET still accepted alongside');
+  r = rs(); await nl(mkA(signWith(process.env.NL_ADMIN_KEY, msg)), r); assert.equal(JSON.parse(r.body).ok, true, 'NL_ADMIN_KEY accepted');
+  r = rs(); await nl(mkA(signWith('z'.repeat(40), msg)), r); assert.equal(r.statusCode, 401, 'third key still rejected');
+  // too-short NL_ADMIN_KEY is ignored, never weakens the check
+  process.env.NL_ADMIN_KEY = 'short';
+  r = rs(); await nl(mkA(signWith('short', msg)), r); assert.equal(r.statusCode, 401, 'short NL_ADMIN_KEY ignored');
+  delete process.env.NL_ADMIN_KEY;
+  // user-facing tokens remain LW_SECRET-only: a doi token signed with the admin key verifies nowhere
+  assert.equal(L.verify('doi', (() => { const b64 = (b) => Buffer.from(b).toString('base64url'); const id = L.idOf('t@t.de'); const body = 'doi.' + id + '.0'; return b64(body) + '.' + signWith('y'.repeat(48), body); })()), null, 'NL_ADMIN_KEY cannot mint user tokens');
+});
