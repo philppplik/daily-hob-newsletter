@@ -65,3 +65,6 @@ curl -X POST 'https://daily-hob-newsletter.vercel.app/lw/api/nlweekly?site=kifb&
 Vor dem ersten echten Versand: HTML-Preview per `dry=1&format=html` prüfen und Test-Versand per `&to=` an Philipp (Gmail + Outlook). Tests: `node --test test/*.test.js`.
 
 <!-- redeploy-trigger 2026-11-19 #2: pick up NL_ADMIN_KEY env -->
+
+
+<!-- redeploy 2026-11-19 17:40 CET: activate curated URLs + require gate -->
