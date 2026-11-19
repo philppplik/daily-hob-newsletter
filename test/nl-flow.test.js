@@ -583,3 +583,64 @@ test('nl-weekly topicstate=1: honest provider evidence (contact404 vs topic404, 
     L.contactGet = orig.contactGet; L.topicList = orig.topicList; L.topicSubscribe = orig.topicSubscribe; content.fetchWeek = origFetchWeek;
   }
 });
+
+test('nl-weekly broadcaststate=1: read-only inventory route, early conflict validation, zero side effects', async () => {
+  const L = require('../api/_lw');
+  const FA = require('../api/_fa/falib');
+  const nl = require('../api/_nlh/weekly');
+  const content = require('../newsletter/content');
+  const dispatch = require('../newsletter/dispatch');
+  const rs = () => ({ headers: {}, setHeader(k, v) { this.headers[k.toLowerCase()] = v; }, end(b) { this.body = b; }, statusCode: 200 });
+  const email = 'broadcaststate@test.de';
+  await FA.faStore.put(L.idOf(email), { email, confirmedAt: '2026-10-24T10:00:00Z', nlOptIn: true, nlSync: { consentAt: '2026-10-24T10:00:00Z', state: 'unknown' } });
+  process.env.NL_TOPIC_ID_FA = 'topic_fa_weekly';
+  const origFetchWeek = content.fetchWeek;
+  content.fetchWeek = async () => ({ items: [{ title: 'A', url: 'https://x.test/a', teaser: 't', cat: null, img: null, dayLabel: 'Fr 24.10.' }, { title: 'B', url: 'https://x.test/b', teaser: 't', cat: null, img: null, dayLabel: 'Do 23.10.' }, { title: 'C', url: 'https://x.test/c', teaser: 't', cat: null, img: null, dayLabel: 'Mi 22.10.' }], more: [], weekLabel: 'KW 43', campaign: 'kw43-2026', total: 3, extra: null });
+  const counts = { inv: 0, topicSubscribe: 0, probe: 0, sendMail: 0 };
+  const orig = { inv: dispatch.listBroadcastInventory, topicSubscribe: L.topicSubscribe, probe: dispatch.probeStorage, sendMail: L.sendMail };
+  dispatch.listBroadcastInventory = async () => { counts.inv++; return { complete: true, pages: 1, broadcasts: [{ id: 'bc1', name: 'FA-Wochenrückblick KW 43', status: 'sent', created_at: 'c', scheduled_at: null, sent_at: 's' }, { id: 'bc2', name: 'Other product', status: 'draft', created_at: 'c2', scheduled_at: null, sent_at: null }] }; };
+  L.topicSubscribe = async () => { counts.topicSubscribe++; };
+  dispatch.probeStorage = async () => { counts.probe++; return { ok: true }; };
+  L.sendMail = async () => { counts.sendMail++; };
+  const auth = L.sign('nl:fa:2026-10-25');
+  const snap = async () => JSON.stringify((await FA.faStore.list()).map((x) => x.rec));
+  try {
+    const before = await snap();
+    const r = rs(); await nl({ method: 'GET', url: '/lw/api/nlweekly?site=fa&date=2026-10-25&dry=1&broadcaststate=1', headers: { 'x-lw-auth': auth } }, r);
+    const j = JSON.parse(r.body);
+    assert.equal(r.statusCode, 200);
+    assert.equal(j.broadcastStates.ok, true);
+    assert.equal(j.broadcastStates.total, 2);
+    assert.equal(j.broadcastStates.complete, true, 'explicit completion marker');
+    assert.equal(j.broadcastStates.broadcasts[0].matchesSite, true);
+    assert.equal(j.broadcastStates.broadcasts[1].matchesSite, false);
+    assert.equal(counts.inv, 1);
+    assert.equal(counts.topicSubscribe + counts.probe + counts.sendMail, 0, 'zero mutators');
+    assert.equal(await snap(), before, 'store bytes unchanged');
+
+    for (const url of [
+      '/lw/api/nlweekly?site=fa&date=2026-10-25&broadcaststate=1',
+      '/lw/api/nlweekly?site=fa&date=2026-10-25&dry=1&broadcaststate=1&probe=1',
+      '/lw/api/nlweekly?site=fa&date=2026-10-25&dry=1&broadcaststate=1&to=a%40b.de'
+    ]) {
+      const r2 = rs(); await nl({ method: 'GET', url, headers: { 'x-lw-auth': auth } }, r2);
+      assert.equal(r2.statusCode, 400, url);
+    }
+    const r3 = rs(); await nl({ method: 'POST', url: '/lw/api/nlweekly?site=fa&date=2026-10-25&dry=1&broadcaststate=1', headers: { 'x-lw-auth': auth } }, r3);
+    assert.equal(r3.statusCode, 400, 'POST rejected');
+    assert.equal(counts.inv, 1, 'conflicts ran no inventory');
+    const r4 = rs(); await nl({ method: 'GET', url: '/lw/api/nlweekly?site=fa&date=2026-10-25&dry=1&broadcaststate=1', headers: { 'x-lw-auth': 'bad' } }, r4);
+    assert.equal(r4.statusCode, 401);
+    assert.equal(counts.inv, 1, 'no inventory without auth');
+
+    // provider error -> fixed code, ok:false, never raw
+    dispatch.listBroadcastInventory = async () => { counts.inv++; throw new Error('broadcast-list 500'); };
+    const r5 = rs(); await nl({ method: 'GET', url: '/lw/api/nlweekly?site=fa&date=2026-10-25&dry=1&broadcaststate=1', headers: { 'x-lw-auth': auth } }, r5);
+    const j5 = JSON.parse(r5.body);
+    assert.equal(j5.broadcastStates.ok, false);
+    assert.equal(j5.broadcastStates.code, 'broadcast-list-500');
+  } finally {
+    dispatch.listBroadcastInventory = orig.inv; L.topicSubscribe = orig.topicSubscribe;
+    dispatch.probeStorage = orig.probe; L.sendMail = orig.sendMail; content.fetchWeek = origFetchWeek;
+  }
+});
