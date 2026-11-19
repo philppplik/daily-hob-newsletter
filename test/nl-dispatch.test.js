@@ -256,3 +256,49 @@ test('R14: provider opt-out after applied consent is never undone - applied reco
   assert.equal(r.ok, true);
   assert.deepEqual(optedIn, ['fresh@test.de'], 'only the fresh, unapplied consent is opted in - the provider opt-out stands');
 });
+
+test('broadcast inventory: strict pagination + strict schema validation, fail closed', async () => {
+  const D = require('../newsletter/dispatch');
+  const mk = (handler) => { const calls = []; return { calls, fn: async (u) => { calls.push(u); return handler(calls.length - 1, u); } }; };
+  const page = (data, hasMore) => ({ ok: true, json: { has_more: hasMore, data } });
+  const rec = (id, extra) => ({ id, name: 'N', status: 'sent', created_at: 'c', scheduled_at: null, sent_at: null, ...(extra || {}) });
+
+  // happy path: two pages with after cursor, explicit completion
+  let m = mk((i) => i === 0 ? page([rec('b1')], true) : page([rec('b2')], false));
+  let inv = await D.listBroadcastInventory({ resend: m.fn });
+  assert.equal(inv.complete, true);
+  assert.equal(inv.pages, 2);
+  assert.equal(inv.broadcasts.length, 2);
+  assert.ok(m.calls[1].includes('after=b1'), 'cursor passed');
+  assert.ok(m.calls.every((u) => u.startsWith('/broadcasts?')), 'GET list paths only');
+
+  const bad = [
+    ['json null', () => ({ ok: true, json: null }), /schema/],
+    ['empty object', () => ({ ok: true, json: {} }), /schema/],
+    ['has_more as string', () => ({ ok: true, json: { has_more: 'yes', data: [] } }), /schema/],
+    ['data not array', () => ({ ok: true, json: { has_more: false, data: {} } }), /schema/],
+    ['record without id', () => page([{}], false), /record-schema/],
+    ['record empty id', () => page([{ id: '' }], false), /record-schema/],
+    ['record bad name type', () => page([rec('b1', { name: 5 })], false), /record-schema/],
+    ['record bad status type', () => page([rec('b1', { status: null })], false), /record-schema/],
+    ['record bad created_at type', () => page([rec('b1', { created_at: 7 })], false), /record-schema/],
+    ['empty page while has_more', () => page([], true), /page-empty/],
+    ['repeated cursor', () => page([rec('b1')], true), /cursor-repeat|duplicate-id/],
+    ['duplicate id across pages', (i) => page([rec('b1')], i === 0), /duplicate-id|cursor-repeat/],
+    ['non-ok status', () => ({ ok: false, status: 500, json: null }), /broadcast-list 500/],
+    ['transport error', () => { throw new Error('socket'); }, /broadcast-list transport/]
+  ];
+  for (const [name, handler, re] of bad) {
+    m = mk(handler);
+    await assert.rejects(() => D.listBroadcastInventory({ resend: m.fn }), re, name);
+  }
+
+  // error AFTER a valid first page: whole result discarded
+  m = mk((i) => i === 0 ? page([rec('b1')], true) : ({ ok: true, json: {} }));
+  await assert.rejects(() => D.listBroadcastInventory({ resend: m.fn }), /schema/, 'second bad page discards result');
+
+  // 10-page limit with ever-new ids
+  m = mk((i) => page([rec('b' + i)], true));
+  await assert.rejects(() => D.listBroadcastInventory({ resend: m.fn }), /pages-exceeded/);
+  assert.equal(m.calls.length, 10, 'bounded to 10 pages');
+});
