@@ -38,6 +38,25 @@ module.exports = async (req, res) => {
     return L.redirect(res, FA.SITE_FA + '/newsletter-bestaetigt/');
   }
   if (s === 'iw') {
+    // Weekly add-on DOI (IW): nur Weekly-Felder, Tagesausgabe-Nachweis bleibt unangetastet.
+    const idIwNl = L.verify('doi-nl-iw', t);
+    if (idIwNl) {
+      // Weekly add-on DOI (IW): exakt wie der KIFB-Zweig — alle Guards IM CAS
+      // (bestaetigt, nicht abgemeldet, kein frueheres Weekly-Unsub, noch nicht
+      // angewendet); Erstnachweis (nlOptInConfirmedAt/nlConfirmIp/nlTextVersion)
+      // bleibt bei Replay unveraendert; Tagesausgabe-Nachweis nie angeruehrt.
+      const mIwNl = await IW.iwStore.mutateCas(idIwNl, (r) => {
+        if (!r.confirmedAt || r.unsubscribedAt) return false;
+        if (r.nlUnsub && r.nlUnsub.iw) return false;
+        if (r.nlOptIn === true) return false; // bereits angewendet, Erstnachweis bleibt
+        r.nlOptIn = true;
+        if (!r.nlOptInConfirmedAt) { r.nlOptInConfirmedAt = new Date().toISOString(); r.nlConfirmIp = L.ip(req); r.nlTextVersion = IW.IW_TEXT_VERSION; }
+      });
+      if (mIwNl.ok) { await syncWeekly(L, mIwNl.rec, 'iw'); return L.redirect(res, IW.SITE_IW + '/tagesbericht-bestaetigt?nl=1'); }
+      const curIwNl = mIwNl.rec || await IW.iwStore.get(idIwNl);
+      if (curIwNl && curIwNl.confirmedAt && !curIwNl.unsubscribedAt && curIwNl.nlOptIn === true) return L.redirect(res, IW.SITE_IW + '/tagesbericht-bestaetigt?nl=1');
+      return L.redirect(res, IW.SITE_IW + '/tagesbericht-bestaetigt?e=1');
+    }
     const id = L.verify('doi-iw', t);
     if (!id) return L.redirect(res, IW.SITE_IW + '/tagesbericht-bestaetigt?e=1');
     const rec = await IW.iwStore.get(id);
@@ -45,6 +64,24 @@ module.exports = async (req, res) => {
     if (!rec.confirmedAt) { const m = await IW.iwStore.mutateCas(id, (r) => { r.confirmedAt = r.confirmedAt || new Date().toISOString(); r.confirmIp = L.ip(req); r.unsubscribedAt = null; }); await syncWeekly(L, (m.ok ? m.rec : rec), 'iw'); } // Weekly-Sync nur bei separatem nlOptIn
     const dl = L.token('dl-iw', id, 0);
     return L.redirect(res, IW.SITE_IW + '/tagesbericht-bestaetigt#k=' + dl); // Fragment: geht nicht an Server oder Logs
+  }
+  // Weekly add-on DOI (KIFB): Guards IM CAS (bestaetigt, nicht abgemeldet, noch kein
+  // nlOptIn, kein frueheres Weekly-Unsub); der Tagesbericht-Einwilligungsnachweis
+  // (confirmedAt/confirmIp/unsubscribedAt) wird nie angeruehrt; bei Replay bleibt der
+  // erste Wochen-Nachweis (nlOptInConfirmedAt/nlConfirmIp/nlTextVersion) unveraendert.
+  const idNl = L.verify('doi-nl', t);
+  if (idNl) {
+    const mNl = await L.store.mutateCas(idNl, (r) => {
+      if (!r.confirmedAt || r.unsubscribedAt) return false;
+      if (r.nlUnsub && r.nlUnsub.kifb) return false;
+      if (r.nlOptIn === true) return false; // bereits angewendet, Erstnachweis bleibt
+      r.nlOptIn = true;
+      if (!r.nlOptInConfirmedAt) { r.nlOptInConfirmedAt = new Date().toISOString(); r.nlConfirmIp = L.ip(req); r.nlTextVersion = L.TEXT_VERSION; }
+    });
+    if (mNl.ok) { await syncWeekly(L, mNl.rec, 'kifb'); return L.redirect(res, L.SITE + '/tagesbericht-bestaetigt?nl=1'); }
+    const curNl = mNl.rec || await L.store.get(idNl);
+    if (curNl && curNl.confirmedAt && !curNl.unsubscribedAt && curNl.nlOptIn === true) return L.redirect(res, L.SITE + '/tagesbericht-bestaetigt?nl=1');
+    return L.redirect(res, L.SITE + '/tagesbericht-bestaetigt?e=1');
   }
   const id = L.verify('doi', t);
   const page0 = s === 'tk' ? '/toolkit-bestaetigt' : s === 'atlas' ? '/atlas-daten-bestaetigt' : '/tagesbericht-bestaetigt';
