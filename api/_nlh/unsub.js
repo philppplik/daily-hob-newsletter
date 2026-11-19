@@ -31,7 +31,7 @@ module.exports = async (req, res) => {
       const out = await require('../../newsletter/audience-sync').applyOptOut(L, rec, cfg.key);
       // 'unconfigured' (no topic yet, pre-approval) means no provider mirror exists -
       // the blob record is then the complete and honest opt-out state.
-      const prov = out.status === 'ok' ? 'ok' : out.status === 'unconfigured' ? 'n/a' : 'failed';
+      const prov = out.status === 'ok' ? 'ok' : (out.status === 'unconfigured' || out.status === 'not-present') ? 'n/a' : 'failed';
       await store.mutateCas(id, (r) => {
         const c = r.nlUnsub && r.nlUnsub[cfg.key];
         r.nlUnsub = Object.assign({}, r.nlUnsub, { [cfg.key]: { at: (c && c.at) || new Date().toISOString(), provider: prov, error: out.error } });
