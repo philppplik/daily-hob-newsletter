@@ -29,7 +29,7 @@ const SITES = {
       url: 'https://kifachblatt.de/modell-atlas'
     },
     footerNote: null,
-    maxItems: 8,
+    maxItems: 3,
     maxMore: 6,
     ownOnly: true,
     // Editorial digest: daily analyses first (slug -analyse or morning publication < 10:00 Berlin),
@@ -65,7 +65,7 @@ const SITES = {
       url: 'https://intelligenz-welt.de/ki-modelle/'
     },
     footerNote: null,
-    maxItems: 6,
+    maxItems: 3,
     maxMore: 8,
     ownOnly: true,
     // Editorial digest: own articles only; /news/ briefs fill after /artikel/.
@@ -100,7 +100,7 @@ const SITES = {
       url: 'https://finanz-adjust.de/berichte/'
     },
     footerNote: 'Alle Inhalte dienen ausschließlich der Information und sind keine Anlageberatung.',
-    maxItems: 6,
+    maxItems: 3,
     maxMore: 8,
     ownOnly: true,
     // Editorial digest: only FA's own /artikel/ explainer articles; aggregated news pages
