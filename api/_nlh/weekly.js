@@ -1,10 +1,9 @@
 'use strict';
-// Weekly Sunday newsletter per site. Auth: HMAC x-lw-auth = sign('nl:<site>:<date>'),
-// same LW_SECRET pattern as the report uploads - no new secrets, no new env vars.
+// Weekly Sunday newsletter per site. Auth: HMAC x-lw-auth = sign('nl:<site>:<date>')
+// under LW_SECRET or the additive NL_ADMIN_KEY (L.adminOk) - no rotation of LW_SECRET.
 // GET  ?site=&date=&dry=1&format=json|html  -> summary or rendered preview (admin only)
 // POST ?site=&date=[&to=test@adress.de]     -> real send (per-recipient, one-click unsub)
 // ?to= replaces the whole recipient list (template review before first send).
-const crypto = require('crypto');
 const L = require('../_lw');
 const { SITES } = require('../../newsletter/config');
 const content = require('../../newsletter/content');
@@ -25,9 +24,8 @@ module.exports = async (req, res) => {
   const cfg = SITES[String(q.get('site') || '').toLowerCase()];
   if (!cfg) return L.json(res, 400, { ok: false, error: 'site' });
   const date = /^\d{4}-\d{2}-\d{2}$/.test(q.get('date') || '') ? q.get('date') : new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Berlin' });
-  const got = Buffer.from(String(req.headers['x-lw-auth'] || ''));
-  const want = Buffer.from(L.sign('nl:' + cfg.key + ':' + date));
-  if (got.length !== want.length || !crypto.timingSafeEqual(got, want)) return L.json(res, 401, { ok: false });
+  const got = req.headers['x-lw-auth'];
+  if (!L.adminOk(got, 'nl:' + cfg.key + ':' + date)) return L.json(res, 401, { ok: false });
 
   const to = L.norm(q.get('to') || '');
   // No force parameter anywhere (review v2): 'already-sent' and 'needs_review' are
