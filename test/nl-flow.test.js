@@ -285,7 +285,10 @@ test('unresolved provider opt-out: nl-unsub is never false-success, bulk dispatc
     assert.equal(JSON.parse(r2.body).error, 'optout-unresolved');
     // provider recovers -> sweep resolves it, block lifts (dispatch now reaches sender/audience gates)
     L.topicSubscribe = async () => {};
+    const origList = L.topicList;
+    L.topicList = async () => ({ topics: [{ id: 'topic_fa_weekly', subscription: 'opt_out' }] });
     const r3 = rs(); await nl(mkA('POST', '/lw/api/nlweekly?site=fa&date=2026-10-25'), r3);
+    L.topicList = origList;
     const j3 = JSON.parse(r3.body);
     assert.notEqual(j3.error, 'optout-unresolved', 'block lifted after verified opt-out');
     const rec2 = await FA.faStore.get(id);
