@@ -111,9 +111,9 @@ module.exports = async (req, res) => {
       if (!u || u.provider === 'ok' || u.provider === 'n/a') continue;
       const out = await sync.applyOptOut(L, rec, cfg.key);
       await store.mutateCas(id, (r) => {
-        r.nlUnsub = Object.assign({}, r.nlUnsub, { [cfg.key]: { at: u.at, provider: out.status === 'ok' ? 'ok' : 'failed', error: out.error } });
+        r.nlUnsub = Object.assign({}, r.nlUnsub, { [cfg.key]: { at: u.at, provider: out.status === 'ok' ? 'ok' : (out.status === 'unconfigured' || out.status === 'not-present') ? 'n/a' : 'failed', error: out.error } });
       }).catch(() => {});
-      if (out.status !== 'ok') unresolvedOut.push(id);
+      if (out.status !== 'ok' && out.status !== 'unconfigured' && out.status !== 'not-present') unresolvedOut.push(id);
     }
     if (unresolvedOut.length) return L.json(res, 409, { ok: false, error: 'optout-unresolved', blocked: unresolvedOut.sort(), note: 'broadcast held: provider opt-out could not be verified; resolve before any send' });
   }
