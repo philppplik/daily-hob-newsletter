@@ -27,6 +27,12 @@ function berlinMidnightUtc(dateStr) {
   const guess = Date.parse(dateStr + 'T00:00:00Z');
   return guess - berlinOffsetMs(new Date(guess));
 }
+// Berliner Wanduhrzeit als UTC-ms (Offset wird am Zielzeitpunkt selbst gelesen, damit
+// 09:00 auch am DST-Umstellungstag 09:00 bleibt - Mitternacht + 9h waere dort 08:00/10:00).
+function berlinClockUtc(dateStr, hhmm) {
+  const guess = Date.parse(dateStr + 'T' + hhmm + ':00Z');
+  return guess - berlinOffsetMs(new Date(guess));
+}
 const dayFmt = new Intl.DateTimeFormat('de-DE', { timeZone: 'Europe/Berlin', weekday: 'short', day: '2-digit', month: '2-digit' });
 const longFmt = new Intl.DateTimeFormat('de-DE', { timeZone: 'Europe/Berlin', day: 'numeric', month: 'long' });
 const isoDayFmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Berlin' });
@@ -70,14 +76,23 @@ function utm(cfg, url, campaign, slot) {
   return url + sep + 'utm_source=' + encodeURIComponent(cfg.utmSource) + '&utm_medium=email&utm_campaign=' + encodeURIComponent(campaign) + '&utm_content=' + encodeURIComponent(slot);
 }
 
-// sendDate: 'YYYY-MM-DD' (Europe/Berlin). Window: the 7 Berlin days ending at send-day midnight.
+// sendDate: 'YYYY-MM-DD' (Europe/Berlin). Stichtag ist der Versandslot 09:00 Berlin am
+// Versandtag. Das Fenster reicht lueckenlos von Stichtag zu Stichtag: [letzter Versand
+// 09:00, dieser Versand 09:00). Artikel nach dem Stichtag erscheinen in der naechsten
+// Ausgabe - kein Loch, kein Duplikat. Voraussetzung: der Versand laeuft nicht vor 09:00
+// Berlin (gewaehlter Slot: Freitag 09:00 Europe/Berlin).
 async function fetchWeek(cfg, sendDate, fetchImpl) {
   const doFetch = fetchImpl || fetch;
   const r = await doFetch(cfg.feed, { headers: { 'user-agent': 'weekly-newsletter/1.0' } });
   if (!r.ok) throw new Error('feed ' + r.status);
   const all = parseFeed(await r.text());
-  const to = berlinMidnightUtc(sendDate);
-  const from = to - 7 * 864e5;
+  // DST-exakt: jede Fenstergrenze ist die Berliner Wanduhrzeit 09:00 ihres eigenen
+  // Kalendertags. Ueber einer DST-Umstellung sind 7 Wandtage 167/169 statt 168 Stunden -
+  // die Fenster schliessen trotzdem lueckenlos aneinander.
+  const p = sendDate.split('-').map(Number);
+  const dayStr = (off) => new Date(Date.UTC(p[0], p[1] - 1, p[2] + off)).toISOString().slice(0, 10);
+  const to = berlinClockUtc(dayStr(0), '09:00');
+  const from = berlinClockUtc(dayStr(-7), '09:00');
   let week = all.filter((i) => i.ts >= from && i.ts < to);
   if (cfg.ownOnly) week = week.filter((i) => i.url.startsWith(cfg.site));
   if (cfg.allowPath) week = week.filter((i) => cfg.allowPath.test(new URL(i.url).pathname));
@@ -106,10 +121,10 @@ async function fetchWeek(cfg, sendDate, fetchImpl) {
   const campaign = 'kw' + iso.week + '-' + iso.year;
   // Article images: only the site's own hero (same origin as the feed links) ever enters a mail.
   const ownImg = (i) => (i.img && i.img.startsWith(cfg.site + '/') ? i.img : null);
-  const mapItem = (i, n) => ({ title: deStale(i.title, i.ts, sendDate), url: utm(cfg, i.url, campaign, 'artikel-' + n), orig: i.url, teaser: deStale(i.teaser, i.ts, sendDate), cat: i.cat, img: ownImg(i), dayLabel: dayFmt.format(new Date(i.ts)) });
+  const mapItem = (i, n) => { const img = ownImg(i); return { title: deStale(i.title, i.ts, sendDate), url: utm(cfg, i.url, campaign, 'artikel-' + n), orig: i.url, teaser: deStale(i.teaser, i.ts, sendDate), cat: i.cat, img, imgLabel: img ? cfg.imgLabelDefault || null : null, dayLabel: dayFmt.format(new Date(i.ts)) }; };
   const items = primary.map((i, n) => mapItem(i, n + 1));
   const moreM = more.map((i, n) => ({ title: i.title, url: utm(cfg, i.url, campaign, 'mehr-' + (n + 1)) }));
-  const fromD = new Date(from), toD = new Date(to - 864e5);
+  const fromD = new Date(from), toD = new Date(to - 1); // Fensteranfang bis Versandtag (Stichtag 09:00)
   const sameMonth = longFmt.format(fromD).split(' ')[1] === longFmt.format(toD).split(' ')[1];
   const range = sameMonth ? longFmt.format(fromD).split(' ')[0] + '–' + longFmt.format(toD) : longFmt.format(fromD) + '–' + longFmt.format(toD);
   const weekLabel = 'KW ' + iso.week + ' · ' + range;
