@@ -86,6 +86,22 @@ test('applyCurated selects/orders only feed URLs, re-images with label, fail-saf
   assert.equal(out.more.length, 1, 'more list preserved');
 });
 
+test('applyCurated: Bild ohne Feed-Hero + Kuratierung ohne imgLabel bekommt Default-Markierung', () => {
+  const { applyCurated } = require('../newsletter/curated');
+  const week = { items: [
+    { title: 'A', url: 'https://finanz-adjust.de/artikel/a', orig: 'https://finanz-adjust.de/artikel/a', img: null, teaser: '', cat: null, dayLabel: '' }
+  ], more: [], weekLabel: 'W', total: 1, extra: null };
+  // Kuratierung ergaenzt NUR ein Bild, kein Label -> cfg.imgLabelDefault greift nach der Kuratierung
+  const out = applyCurated(week, { items: [{ url: 'https://finanz-adjust.de/artikel/a', img: 'https://finanz-adjust.de/assets/symbol/x.jpg' }] }, SITES.fa);
+  assert.equal(out.items[0].img, 'https://finanz-adjust.de/assets/symbol/x.jpg');
+  assert.equal(out.items[0].imgLabel, 'KI-generierte Symbolgrafik · Symbolbild', 'Default-Markierung auch bei kuratiert nachgeruestetem Bild');
+  const r = render({ cfg: { ...SITES.fa, from: 'finanz adjust <f@x.de>' }, subject: 'S', preheader: 'P', weekLabel: 'W', items: out.items, more: [], unsubUrl: 'u' });
+  assert.ok(r.html.includes('KI-generierte Symbolgrafik · Symbolbild'), 'Kennzeichnung steht im fertigen HTML');
+  // explizites kuratiertes Label schlaegt den Default weiterhin
+  const out2 = applyCurated(week, { items: [{ url: 'https://finanz-adjust.de/artikel/a', img: 'https://finanz-adjust.de/assets/symbol/x.jpg', imgLabel: 'Redaktionelle Grafik' }] }, SITES.fa);
+  assert.equal(out2.items[0].imgLabel, 'Redaktionelle Grafik');
+});
+
 test('applyCurated rejects cross-origin image overrides', () => {
   const { applyCurated } = require('../newsletter/curated');
   const week = { items: [{ title: 'A', url: 'u', orig: 'https://kifachblatt.de/a', img: 'https://kifachblatt.de/a.jpg', teaser: '', cat: null, dayLabel: '' }], more: [], weekLabel: 'W', total: 1, extra: null };
