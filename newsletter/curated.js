@@ -34,6 +34,8 @@ function applyCurated(week, curated, cfg) {
     if (entry.img === 'none' || entry.img === null) it.img = null;
     else if (typeof entry.img === 'string') it.img = entry.img.startsWith(cfg.site + '/') ? entry.img : null;
     if (it.img && typeof entry.imgLabel === 'string' && entry.imgLabel) it.imgLabel = entry.imgLabel;
+    if (!it.img) delete it.imgLabel; // a caption never survives without an image (matters with cfg.imgLabelDefault)
+    if (it.img && !it.imgLabel && cfg.imgLabelDefault) it.imgLabel = cfg.imgLabelDefault; // curated-added image without label still gets the visible default marking
     items.push(it);
     picked.add(key(hit));
   }
