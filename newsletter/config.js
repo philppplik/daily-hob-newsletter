@@ -108,6 +108,10 @@ const SITES = {
     allowPath: /^\/artikel\//,
     utmSource: 'fa-newsletter',
     subjectPrefix: 'FA-Wochenrückblick',
+    // FA's own heroes are KI-generated symbolic graphics (site captions: 'KI-generierte
+    // Symbolgrafik'); default caption so the visible marking never depends on a curated
+    // JSON. A curated per-item imgLabel overrides this default; img 'none' drops both.
+    imgLabelDefault: 'KI-generierte Symbolgrafik · Symbolbild',
     unsubPage: '/abmelden/?ok=1'
   }
 };
