@@ -115,12 +115,13 @@ const feedXml = (rows) => '<?xml version="1.0"?><rss><channel>' + rows.map((r) =
 const fakeFetch = (xml) => async () => ({ ok: true, text: async () => xml });
 
 test('Berlin week window across DST end (2026-10-25): boundaries exact', async () => {
+  // Stichtag-Fenster: [So 18.10. 09:00 CEST, So 25.10. 09:00 CET) = 169 Stunden.
   const xml = feedXml([
-    ['in-first',  'https://x.de/artikel/a1', 'Sat, 18 Oct 2026 00:30:00 +0200'], // first window hour (CEST)
-    ['out-early', 'https://x.de/artikel/a2', 'Fri, 17 Oct 2026 23:30:00 +0200'],  // before window
-    ['in-last',   'https://x.de/artikel/a3', 'Sat, 24 Oct 2026 23:30:00 +0200'],  // last window hour (CEST)
-    ['out-late',  'https://x.de/artikel/a4', 'Sun, 25 Oct 2026 00:30:00 +0200'],  // send day itself excluded
-    ['in-cet',    'https://x.de/artikel/a5', 'Sat, 24 Oct 2026 20:30:00 +0100']   // = 20:30 UTC, inside
+    ['in-first',  'https://x.de/artikel/a1', 'Sun, 18 Oct 2026 09:30:00 +0200'], // erste Fensterstunde (CEST)
+    ['out-early', 'https://x.de/artikel/a2', 'Sun, 18 Oct 2026 08:30:00 +0200'],  // vor dem Stichtag der Vorwoche
+    ['in-last',   'https://x.de/artikel/a3', 'Sun, 25 Oct 2026 08:30:00 +0100'],  // letzte Fensterstunde (CET)
+    ['out-late',  'https://x.de/artikel/a4', 'Sun, 25 Oct 2026 09:30:00 +0100'],  // nach dem Stichtag -> naechste Ausgabe
+    ['in-cet',    'https://x.de/artikel/a5', 'Sat, 24 Oct 2026 20:30:00 +0200']   // inside
   ]);
   const cfg = { ...SITES.kifb, feed: 'https://x.de/feed', site: 'https://x.de', preferSlug: null, preferBeforeHour: null };
   const w = await content.fetchWeek(cfg, '2026-10-25', fakeFetch(xml));
@@ -128,15 +129,16 @@ test('Berlin week window across DST end (2026-10-25): boundaries exact', async (
   assert.ok(titles.includes('in-first') && titles.includes('in-last') && titles.includes('in-cet'));
   assert.ok(!titles.includes('out-early') && !titles.includes('out-late'));
   assert.equal(w.total, 3);
-  assert.ok(/^KW 43 · 18\.–24\. Oktober$/.test(w.weekLabel), w.weekLabel);
+  assert.ok(/^KW 43 · 18\.–25\. Oktober$/.test(w.weekLabel), w.weekLabel);
 });
 
 test('Berlin week window across DST start (2026-03-29)', async () => {
+  // Stichtag-Fenster: [So 22.03. 09:00 CET, So 29.03. 09:00 CEST) = 167 Stunden.
   const xml = feedXml([
-    ['in-first', 'https://x.de/artikel/b1', 'Sun, 22 Mar 2026 00:30:00 +0100'],
-    ['out-early','https://x.de/artikel/b2', 'Sat, 21 Mar 2026 23:30:00 +0100'],
-    ['in-last',  'https://x.de/artikel/b3', 'Sat, 28 Mar 2026 23:30:00 +0100'],
-    ['out-late', 'https://x.de/artikel/b4', 'Sun, 29 Mar 2026 00:30:00 +0100']
+    ['in-first', 'https://x.de/artikel/b1', 'Sun, 22 Mar 2026 09:30:00 +0100'],
+    ['out-early','https://x.de/artikel/b2', 'Sun, 22 Mar 2026 08:30:00 +0100'],
+    ['in-last',  'https://x.de/artikel/b3', 'Sun, 29 Mar 2026 08:30:00 +0200'],
+    ['out-late', 'https://x.de/artikel/b4', 'Sun, 29 Mar 2026 09:30:00 +0200'] // nach dem Stichtag -> naechste Ausgabe
   ]);
   const cfg = { ...SITES.kifb, feed: 'https://x.de/feed', site: 'https://x.de', preferSlug: null, preferBeforeHour: null };
   const w = await content.fetchWeek(cfg, '2026-03-29', fakeFetch(xml));
